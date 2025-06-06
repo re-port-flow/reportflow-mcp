@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { McpModule } from './mcp/mcp.module';
+import { McpModule } from '@/mcpPdf/mcp.module';
 import { McpModule as McpDecModule, McpTransportType } from '@rekog/mcp-nest';
 import { ConfigModule } from '@nestjs/config';
 
