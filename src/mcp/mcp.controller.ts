@@ -1,34 +1,40 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
-import { McpService } from './mcp.service';
-import { CreateMcpDto } from './dto/create-mcp.dto';
-import { UpdateMcpDto } from './dto/update-mcp.dto';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Patch,
+  Param,
+  Delete,
+  HttpStatus,
+  HttpCode,
+} from '@nestjs/common';
+import { McpService } from '@/mcp/mcp.service';
+import { CreateMcpDto } from '@/mcp/dto/create-mcp.dto';
+import { CreateDocumentDto } from '@/mcp/dto/create-document.dto';
 
 @Controller('mcp')
 export class McpController {
   constructor(private readonly mcpService: McpService) {}
 
-  @Post()
-  create(@Body() createMcpDto: CreateMcpDto) {
-    return this.mcpService.create(createMcpDto);
+  // REST endpoints for testing MCP functionality via HTTP
+  @Post('template')
+  @HttpCode(HttpStatus.OK)
+  async getTemplate(@Body() getTemplateDto: CreateMcpDto) {
+    return this.mcpService.getDesignTemplate(getTemplateDto.label);
   }
 
-  @Get()
-  findAll() {
-    return this.mcpService.findAll();
+  @Post('document')
+  @HttpCode(HttpStatus.CREATED)
+  async createDocument(@Body() createDocumentDto: CreateDocumentDto) {
+    return this.mcpService.createDocument(createDocumentDto);
   }
 
-  @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.mcpService.findOne(+id);
-  }
-
-  @Patch(':id')
-  update(@Param('id') id: string, @Body() updateMcpDto: UpdateMcpDto) {
-    return this.mcpService.update(+id, updateMcpDto);
-  }
-
-  @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.mcpService.remove(+id);
-  }
+  // @Post('validate')
+  // @HttpCode(HttpStatus.OK)
+  // async validateParams(
+  //   @Body() body: { label: string; params: Record<string, any> },
+  // ) {
+  //   return this.mcpService.validateDocumentParams(body.label, body.params);
+  // }
 }

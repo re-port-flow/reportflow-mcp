@@ -1,1 +1,3 @@
-export class CreateMcpDto {}
+export class CreateMcpDto {
+  label: string;
+}
