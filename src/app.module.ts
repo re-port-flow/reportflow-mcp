@@ -1,27 +1,19 @@
 import { Module } from '@nestjs/common';
 import { McpModule } from './mcp/mcp.module';
-import { McpModule as McpDecModule } from '@rekog/mcp-nest';
-import { TypeOrmModule } from '@nestjs/typeorm';
-import { ConfigModule, ConfigService } from '@nestjs/config';
-import typeorm from './config/typeorm';
+import { McpModule as McpDecModule, McpTransportType } from '@rekog/mcp-nest';
+import { ConfigModule } from '@nestjs/config';
 
 @Module({
   imports: [
+    ConfigModule.forRoot({
+      isGlobal: true,
+    }),
     McpModule,
-    // ConfigModule.forRoot({
-    //   isGlobal: true,
-    //   load: [typeorm],
-    // }),
-    //
-    // TypeOrmModule.forRootAsync({
-    //   inject: [ConfigService],
-    //   useFactory: (configService: ConfigService) =>
-    //     configService.get('typeorm'),
-    // }),
-    // McpDecModule.forRoot({
-    //   name: 'my-mcp-server',
-    //   version: '1.0.0',
-    // }),
+    McpDecModule.forRoot({
+      name: 'document-generation-mcp',
+      version: '1.0.0',
+      transport: McpTransportType.SSE, // or McpTransportType.STDIO for command-line usage
+    }),
   ],
   providers: [],
 })

@@ -1,14 +1,4 @@
-import {
-  Controller,
-  Get,
-  Post,
-  Body,
-  Patch,
-  Param,
-  Delete,
-  HttpStatus,
-  HttpCode,
-} from '@nestjs/common';
+import { Controller, Post, Body, HttpCode, HttpStatus } from '@nestjs/common';
 import { McpService } from '@/mcp/mcp.service';
 import { CreateMcpDto } from '@/mcp/dto/create-mcp.dto';
 import { CreateDocumentDto } from '@/mcp/dto/create-document.dto';
@@ -17,24 +7,21 @@ import { CreateDocumentDto } from '@/mcp/dto/create-document.dto';
 export class McpController {
   constructor(private readonly mcpService: McpService) {}
 
-  // REST endpoints for testing MCP functionality via HTTP
+  /**
+   * Endpoint for the LLM to fetch a design template using a label.
+   */
   @Post('template')
   @HttpCode(HttpStatus.OK)
-  async getTemplate(@Body() getTemplateDto: CreateMcpDto) {
-    return this.mcpService.getDesignTemplate(getTemplateDto.label);
+  async getTemplate(@Body() createMcpDto: CreateMcpDto) {
+    return this.mcpService.getDesignTemplate(createMcpDto.label);
   }
 
+  /**
+   * Endpoint for the LLM to submit structured data to create a document.
+   */
   @Post('document')
   @HttpCode(HttpStatus.CREATED)
   async createDocument(@Body() createDocumentDto: CreateDocumentDto) {
     return this.mcpService.createDocument(createDocumentDto);
   }
-
-  // @Post('validate')
-  // @HttpCode(HttpStatus.OK)
-  // async validateParams(
-  //   @Body() body: { label: string; params: Record<string, any> },
-  // ) {
-  //   return this.mcpService.validateDocumentParams(body.label, body.params);
-  // }
 }
