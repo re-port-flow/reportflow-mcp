@@ -6,7 +6,7 @@ import {
   CreateDocumentRequest,
   DesignTemplateRequest,
   DesignTemplateResponse,
-} from '@/mcpPdf/types/mcp.types';
+} from '@/mcp/types/mcp.types';
 
 @Injectable()
 export class ApiService {

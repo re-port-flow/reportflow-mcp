@@ -1,8 +1,8 @@
 // src/mcp/tools/document.tool.ts
 import { Injectable, Logger } from '@nestjs/common';
-import { Tool, Context } from '@rekog/mcp-nest';
+import { Tool, Context } from '@/mcp';
 import { z } from 'zod';
-import { McpService } from '../mcp.service';
+import { McpService } from '@/mcp/mcp.service';
 
 @Injectable()
 export class DocumentTool {
@@ -12,7 +12,7 @@ export class DocumentTool {
 
   @Tool({
     name: 'create_document',
-    description: `Creates a document based on a template. 
+    description: `Creates a document based on a template.
     Use this tool when the user wants to create documents like receipts (領収書), invoices, or other templated documents.
     The tool will fetch the template structure and create the document with the provided data.`,
     parameters: z.object({

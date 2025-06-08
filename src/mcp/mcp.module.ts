@@ -8,10 +8,17 @@ import { createSseController } from './transport/sse.controller.factory';
 import { StdioService } from './transport/stdio.service';
 import { createStreamableHttpController } from './transport/streamable-http.controller.factory';
 import { normalizeEndpoint } from './utils/normalize-endpoint';
+import { HttpModule } from '@nestjs/axios';
+import { ConfigModule } from '@nestjs/config';
+import { McpController } from '@/mcp/mcp.controller';
+import { McpService } from '@/mcp/mcp.service';
+import { ApiService } from '@/mcp/api.service';
+// import { DocumentTool } from '@/mcp/tools/document.tool';
 
 @Module({
-  imports: [DiscoveryModule],
-  providers: [McpRegistryService, McpExecutorService],
+  imports: [HttpModule, ConfigModule, DiscoveryModule],
+  controllers: [McpController],
+  providers: [McpRegistryService, McpExecutorService, McpService, ApiService],
 })
 export class McpModule {
   static forRoot(options: McpOptions): DynamicModule {

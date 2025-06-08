@@ -5,7 +5,7 @@ import { firstValueFrom } from 'rxjs';
 import { CreateMcpDto } from './dto/create-mcp.dto';
 import { UpdateMcpDto } from './dto/update-mcp.dto';
 import { CreateDocumentDto } from './dto/create-document.dto';
-import { DesignTemplateResponse } from '@/mcpPdf/types/mcp.types';
+import { DesignTemplateResponse } from '@/mcp/types/mcp.types';
 
 @Injectable()
 export class McpService {

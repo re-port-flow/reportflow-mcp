@@ -1548,13 +1548,6 @@
   resolved "https://registry.yarnpkg.com/@pkgr/core/-/core-0.2.7.tgz#eb5014dfd0b03e7f3ba2eeeff506eed89b028058"
   integrity sha512-YLT9Zo3oNPJoBjBc4q8G2mjU4tqIbf5CEOORbUUr48dCD9q3umJ3IPlVqOqDakPfd2HuwccBaqlGhN4Gmr5OWg==
 
-"@rekog/mcp-nest@^1.5.2":
-  version "1.5.2"
-  resolved "https://registry.yarnpkg.com/@rekog/mcp-nest/-/mcp-nest-1.5.2.tgz#2fafe95ecd09442dfc18931b4d687b6e1a4e966d"
-  integrity sha512-q5gEHKPHVIevOzr6f6qc0gt7+J6VvELdU/o9fqNj6kJfHNXIBK0VSyXyv7Aq7lrh99sT4P/PpVKreVlML6pRlg==
-  dependencies:
-    path-to-regexp "^8.2.0"
-
 "@sec-ant/readable-stream@^0.4.1":
   version "0.4.1"
   resolved "https://registry.yarnpkg.com/@sec-ant/readable-stream/-/readable-stream-0.4.1.tgz#60de891bb126abfdc5410fdc6166aca065f10a0c"
@@ -5565,7 +5558,7 @@ path-scurry@^2.0.0:
     lru-cache "^11.0.0"
     minipass "^7.1.2"
 
-path-to-regexp@8.2.0, path-to-regexp@^8.0.0, path-to-regexp@^8.2.0:
+path-to-regexp@8.2.0, path-to-regexp@^8.0.0:
   version "8.2.0"
   resolved "https://registry.yarnpkg.com/path-to-regexp/-/path-to-regexp-8.2.0.tgz#73990cc29e57a3ff2a0d914095156df5db79e8b4"
   integrity sha512-TdrF7fW9Rphjq4RjrW0Kp2AW0Ahwu9sRGTkS6bvDi0SCwZlEZYmcfDbEsTz8RVk0EHIS/Vd1bv3JhG+1xZuAyQ==

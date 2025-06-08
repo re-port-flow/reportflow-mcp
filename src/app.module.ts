@@ -1,20 +1,19 @@
 import { Module } from '@nestjs/common';
-import { McpModule } from '@/mcpPdf/mcp.module';
-import { McpModule as McpDecModule, McpTransportType } from '@rekog/mcp-nest';
-import { ConfigModule } from '@nestjs/config';
+import { randomUUID } from 'crypto';
+import { McpModule, McpTransportType } from '@/mcp';
+import { GreetingResource } from '@/resources/greeting.resource';
+import { GreetingTool } from '@/resources/greeting.tool';
+import { GreetingPrompt } from '@/resources/greeting.prompt';
 
+// Note: The stateful server exposes SSE and Streamable HTTP endpoints.
 @Module({
   imports: [
-    ConfigModule.forRoot({
-      isGlobal: true,
-    }),
-    McpModule,
-    McpDecModule.forRoot({
-      name: 'document-generation-mcp',
-      version: '1.0.0',
-      transport: McpTransportType.SSE, // or McpTransportType.STDIO for command-line usage
+    McpModule.forRoot({
+      name: 'playground-mcp-server',
+      version: '0.0.1',
+      transport: McpTransportType.STDIO,
     }),
   ],
-  providers: [],
+  providers: [GreetingResource, GreetingTool, GreetingPrompt],
 })
 export class AppModule {}

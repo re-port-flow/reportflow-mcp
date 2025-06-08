@@ -1,7 +1,7 @@
 import { Controller, Post, Body, HttpCode, HttpStatus } from '@nestjs/common';
-import { McpService } from '@/mcpPdf/mcp.service';
-import { CreateMcpDto } from '@/mcpPdf/dto/create-mcp.dto';
-import { CreateDocumentDto } from '@/mcpPdf/dto/create-document.dto';
+import { McpService } from '@/mcp/mcp.service';
+import { CreateMcpDto } from '@/mcp/dto/create-mcp.dto';
+import { CreateDocumentDto } from '@/mcp/dto/create-document.dto';
 
 @Controller('mcp')
 export class McpController {

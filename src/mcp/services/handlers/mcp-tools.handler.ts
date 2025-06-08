@@ -9,7 +9,7 @@ import { Injectable, Scope } from '@nestjs/common';
 import { ContextIdFactory, ModuleRef } from '@nestjs/core';
 import { Request } from 'express';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { McpRegistryService } from '../mcp-registry.service';
+import { McpRegistryService } from '@/mcp';
 import { McpHandlerBase } from './mcp-handler.base';
 
 @Injectable({ scope: Scope.REQUEST })

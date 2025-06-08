@@ -29,7 +29,6 @@
     "@nestjs/mapped-types": "*",
     "@nestjs/platform-express": "^11.0.1",
     "@nestjs/typeorm": "^11.0.0",
-    "@rekog/mcp-nest": "^1.5.2",
     "alova": "^3.2.13",
     "axios": "^1.9.0",
     "mysql2": "^3.14.1",
