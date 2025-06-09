@@ -7,6 +7,11 @@ import { UpdateMcpDto } from './dto/update-mcp.dto';
 import { CreateDocumentDto } from './dto/create-document.dto';
 import { DesignTemplateResponse } from '@/mcp/types/mcp.types';
 
+import { config as dotenvConfig } from 'dotenv';
+import * as process from 'node:process';
+
+dotenvConfig({ path: '.env' });
+
 @Injectable()
 export class McpService {
   private readonly logger = new Logger(McpService.name);
@@ -15,16 +20,10 @@ export class McpService {
   private secretKey: string;
   private templateCache = new Map<string, DesignTemplateResponse>();
 
-  constructor(
-    private httpService: HttpService,
-    private configService: ConfigService,
-  ) {
-    this.apiBaseUrl = this.configService.get<string>(
-      'API_BASE_URL',
-      'http://localhost:3002',
-    );
-    this.appKey = this.configService.get<string>('APP_KEY', '');
-    this.secretKey = this.configService.get<string>('SECRET_KEY', '');
+  constructor(private readonly httpService: HttpService) {
+    this.apiBaseUrl = `${process.env.API_BASE_URL || 'http://localhost:3002'}`;
+    this.appKey = `${process.env.APP_KEY || ''}`;
+    this.secretKey = `${process.env.SECRET_KEY || ''}`;
   }
 
   // Core MCP functionality
@@ -37,14 +36,18 @@ export class McpService {
     }
 
     try {
-      const headers = this.getHeaders();
-      const response = await firstValueFrom(
-        this.httpService.post<DesignTemplateResponse>(
+      const response =
+        await this.httpService.axiosRef.post<DesignTemplateResponse>(
           `${this.apiBaseUrl}/v1/getDesignTemplate`,
-          { label },
-          { headers },
-        ),
-      );
+          { label: label },
+          {
+            headers: {
+              AppKey: this.appKey,
+              SecretKey: this.secretKey,
+              'Content-Type': 'application/json',
+            },
+          },
+        );
 
       // Cache the template
       this.templateCache.set(label, response.data);

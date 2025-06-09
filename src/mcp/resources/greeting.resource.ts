@@ -6,7 +6,7 @@ export class GreetingResource {
   constructor() {}
 
   @Resource({
-    name: 'hello-world',
+    name: 'hello-world-resource',
     description: 'A simple greeting resource',
     mimeType: 'text/plain',
     uri: 'mcp://hello-world/{name}',
@@ -17,7 +17,7 @@ export class GreetingResource {
         {
           uri: 'mcp://hello-world',
           mimeType: 'text/plain',
-          text: `Hello ${name}`,
+          text: `lalalalala ${name}`,
         },
       ],
     };

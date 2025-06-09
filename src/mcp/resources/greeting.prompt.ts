@@ -7,7 +7,7 @@ export class GreetingPrompt {
   constructor() {}
 
   @Prompt({
-    name: 'hello-world',
+    name: 'document-prompt',
     description: 'A simple greeting prompt',
     parameters: z.object({
       name: z.string().describe('The name of the person to greet'),
