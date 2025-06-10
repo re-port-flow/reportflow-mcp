@@ -4,6 +4,7 @@ import { Progress } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { Tool, Context } from '@/mcp';
 import { McpService } from '@/mcp/mcp.service';
+import { CreateDocumentDto } from '@/mcp/dto/create-document.dto';
 
 @Injectable()
 export class DocumentTool {
@@ -59,55 +60,104 @@ ${requiredFields}
   }
 
   @Tool({
-    name: 'test-structured',
+    name: 'create_document',
     description:
-      'Returns a greeting and simulates a long operation with progress updates',
+      'テンプレートを使用して文書（PDF）を作成します。まずget_document_templateでテンプレート情報を取得してから使用してください。',
     parameters: z.object({
-      name: z.string().default('World'),
+      designId: z
+        .string()
+        .describe('デザインID（get_document_templateで取得）'),
+      version: z.number().describe('テンプレートのバージョン'),
+      fileName: z.string().describe('ファイル名'),
+      params: z
+        .record(z.any())
+        .describe('文書のパラメータ（テンプレートの必須フィールドに対応）'),
     }),
-    outputSchema: z.object({
-      type: z.literal('text'),
-      text: z.string(),
-    }),
-    annotations: {
-      title: 'Greeting Tool',
-      destructiveHint: false,
-      readOnlyHint: true,
-      idempotentHint: true,
-      openWorldHint: false,
-    },
   })
-  async sayHelloStructured({ name }, context: Context, request: Request) {
-    let greeting: string;
-
-    // request is not defined for stdio server
-    if (request && typeof request.get === 'function') {
-      const userAgent = request.get('user-agent') || 'Unknown';
-      greeting = `Hello, ${name}! Your user agent is: ${userAgent}`;
-    } else {
-      greeting = `Hello, ${name}!`;
-    }
-
-    const totalSteps = 5;
-    for (let i = 0; i < totalSteps; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
-      // Send a progress update.
+  async createDocument(
+    {
+      designId,
+      version,
+      fileName,
+      params,
+    }: {
+      designId: string;
+      version: number;
+      fileName: string;
+      params: CreateDocumentDto;
+    },
+    context: Context,
+  ) {
+    try {
+      // Progress report: Starting document creation
       await context.reportProgress({
-        progress: (i + 1) * 20,
+        progress: 10,
         total: 100,
       } as Progress);
-    }
 
-    const structuredContent = { type: 'text', text: greeting };
-    return {
-      structuredContent,
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(structuredContent, null, 2),
+      this.logger.log(`Creating document with designId: ${designId}`);
+
+      // Validate the document structure
+      const documentData: CreateDocumentDto = {
+        designId: designId,
+        version,
+        content: {
+          fileName,
+          params,
         },
-      ],
-    };
+      };
+
+      // Progress report: Sending request
+      await context.reportProgress({
+        progress: 30,
+        total: 100,
+      } as Progress);
+
+      // Call the API to create the document
+      const result = await this.mcpService.createDocument(documentData);
+
+      // Progress report: Document created
+      await context.reportProgress({
+        progress: 100,
+        total: 100,
+      } as Progress);
+
+      this.logger.log(`Document creation successful:`, result);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `✅ 文書作成成功！
+
+📄 **作成された文書:**
+- ファイル名: ${fileName}
+- デザインID: ${designId}
+- パラメータ: ${JSON.stringify(params, null, 2)}
+
+📊 **結果:**
+${JSON.stringify(result, null, 2)}
+
+🎉 PDF文書が正常に生成されました！`,
+          },
+        ],
+      };
+    } catch (error) {
+      this.logger.error('Document creation error:', error);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `❌ 文書作成エラー: ${error.message}
+
+🔍 **入力データを確認してください:**
+- デザインID: ${designId}
+- バージョン: ${version}
+- ファイル名: ${fileName}
+- パラメータ: ${JSON.stringify(params, null, 2)}`,
+          },
+        ],
+      };
+    }
   }
 }

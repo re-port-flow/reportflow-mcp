@@ -1,7 +1,7 @@
 export class CreateDocumentDto {
   designId: string;
   version: number;
-  contents: {
+  content: {
     fileName: string;
     params: Record<string, any>;
   };

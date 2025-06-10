@@ -1,19 +1,19 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from '@/app.module';
 
-// async function bootstrap() {
-//   const app = await NestFactory.createApplicationContext(AppModule, {
-//     logger: ['log'],
-//   });
-//   return app.close();
-// }
-// void bootstrap();
-
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, {
-    logger: ['error', 'warn'], // 只显示错误和警告
+  const app = await NestFactory.createApplicationContext(AppModule, {
+    logger: false,
   });
-  await app.listen(3030);
+  return app.close();
 }
-
 void bootstrap();
+
+// async function bootstrap() {
+//   const app = await NestFactory.create(AppModule, {
+//     logger: ['debug'],
+//   });
+//   await app.listen(3030);
+// }
+//
+// void bootstrap();

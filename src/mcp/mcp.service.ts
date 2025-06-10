@@ -69,11 +69,16 @@ export class McpService {
     this.logger.log(`Creating document with designId: ${data.designId}`);
 
     try {
-      const headers = this.getHeaders();
-      const response = await firstValueFrom(
-        this.httpService.post(`${this.apiBaseUrl}/v1/async/single`, data, {
-          headers,
-        }),
+      const response = await this.httpService.axiosRef.post(
+        `${this.apiBaseUrl}/v1/async/single`,
+        data,
+        {
+          headers: {
+            AppKey: this.appKey,
+            SecretKey: this.secretKey,
+            'Content-Type': 'application/json',
+          },
+        },
       );
 
       this.logger.log(
