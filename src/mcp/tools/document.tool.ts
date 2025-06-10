@@ -1,4 +1,3 @@
-import type { Request } from 'express';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Progress } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';

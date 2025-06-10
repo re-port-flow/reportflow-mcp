@@ -1,98 +1,141 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# 文書生成MCPサーバー 使用説明書
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+## 概要
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+このMCP（Model Context Protocol）サーバーは、Claude Desktopアプリケーションと連携して、テンプレートベースの文書生成機能を提供します。領収書、請求書、見積書、納品書などの各種ビジネス文書をPDF形式で作成することができます。
 
-## Description
+## 機能
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+- **文書テンプレート取得**: 文書タイプに応じたテンプレート構造の確認
+- **PDF文書生成**: テンプレートを使用したカスタマイズされた文書の作成
+- **リアルタイム進捗表示**: 文書作成プロセスの進捗をリアルタイムで確認
+- **パラメータ検証**: 入力データの妥当性チェック
 
-## Project setup
+## セットアップ方法
+
+### 1. 前提条件
+
+- Node.js v22以上がインストールされていること
+- Claude Desktopアプリケーションがインストールされていること
+- 文書生成APIサーバーが稼働していること（デフォルト: http://localhost:3002）
+
+### 2. プロジェクトのビルド
 
 ```bash
-$ yarn install
+# プロジェクトディレクトリに移動
+cd /Users/sudami/WebstormProjects/report-mcp
+
+# 依存関係のインストール
+npm install
+
+# プロジェクトのビルド
+npm run build
 ```
 
-## Compile and run the project
+### 3. Claude Desktop設定
 
-```bash
-# development
-$ yarn run start
+Claude Desktop の設定ファイル（`claude_desktop_config.json`）に以下の設定を追加してください：
 
-# watch mode
-$ yarn run start:dev
-
-# production mode
-$ yarn run start:prod
+```json
+{
+  "mcpServers": {
+    "document-generation": {
+      "command": "node",
+      "args": [
+        "/path/to/build"
+      ],
+      "env": {
+        "API_BASE_URL": "http://localhost:3002",
+        "APP_KEY": "xxx",
+        "SECRET_KEY": "xxxxx",
+        "PATH": "/opt/homebrew/opt/node@22/bin:/usr/local/bin:/usr/bin:/bin"
+      }
+    }
+  }
+}
 ```
 
-## Run tests
+### 4. 環境変数の設定
 
-```bash
-# unit tests
-$ yarn run test
+プロジェクトルートに`.env`ファイルを作成し、以下の環境変数を設定してください：
 
-# e2e tests
-$ yarn run test:e2e
-
-# test coverage
-$ yarn run test:cov
+```env
+API_BASE_URL=
+APP_KEY=
+SECRET_KEY=
 ```
 
-## Deployment
+## 利用可能なツール
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+### 1. `get_document_template`
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+文書タイプのテンプレート構造を取得して表示します。
 
-```bash
-$ yarn install -g @nestjs/mau
-$ mau deploy
+**パラメータ:**
+- `label` (string): 文書タイプ（例: "領収書", "請求書", "見積書", "納品書"）
+
+**使用例:**
+```
+テンプレート情報を教えて。文書タイプは「領収書」です。
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+**出力内容:**
+- デザインID
+- バージョン
+- ファイル名
+- 必須フィールド一覧とその型
 
-## Resources
+### 2. `create_document`
 
-Check out a few resources that may come in handy when working with NestJS:
+テンプレートを使用してPDF文書を作成します。
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+**パラメータ:**
+- `designId` (string): デザインID（get_document_templateで取得）
+- `version` (number): テンプレートのバージョン
+- `fileName` (string, optional): ファイル名（省略時はテンプレートのデフォルトを使用）
+- `label` (string, optional): 文書タイプ（fileNameを自動取得する場合に必要）
+- `params` (object): 文書のパラメータ（テンプレートの必須フィールドに対応）
 
-## Support
+**重要な注意点:**
+- `label`パラメータを提供すると、`fileName`は自動的にテンプレートから取得されます
+- カスタムファイル名を使用したい場合のみ`fileName`パラメータを指定してください
+- まず`get_document_template`でテンプレート情報を取得してから使用することを推奨します
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+## 使用例
 
-## Stay in touch
+### 例1: 領収書テンプレートの確認
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+**Claude への指示:**
+```
+領収書のテンプレート構造を教えてください。
+```
 
-## License
+**実行されるツール:**
+- `get_document_template` with `label: "領収書"`
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+### 例2: 領収書の作成
+
+**Claude への指示:**
+```
+以下の情報で領収書を作成してください：
+- 会社名: 株式会社サンプル
+- 金額: 50000
+- 日付: 2024-01-15
+- 項目: コンサルティング料
+```
+
+**実行の流れ:**
+1. `get_document_template`で領収書テンプレートを取得
+2. 必要なパラメータを確認
+3. `create_document`で文書を作成
+
+### 例3: カスタムファイル名での文書作成
+
+**Claude への指示:**
+```
+請求書を作成してください。ファイル名は「invoice_2024_001.pdf」にしてください。
+- 顧客名: 田中太郎
+- 金額: 120000
+- 請求日: 2024-01-20
+```
+
