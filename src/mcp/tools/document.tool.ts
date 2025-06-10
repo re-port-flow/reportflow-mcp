@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { Tool, Context } from '@/mcp';
 import { McpService } from '@/mcp/mcp.service';
 import { CreateDocumentDto } from '@/mcp/dto/create-document.dto';
+import { AxiosError } from 'axios';
 
 @Injectable()
 export class DocumentTool {
@@ -22,7 +23,7 @@ export class DocumentTool {
         .describe('文書タイプ（例: "領収書", "請求書", "見積書", "納品書"）'),
     }),
   })
-  async getDocumentTemplate({ label }, context: Context) {
+  async getDocumentTemplate({ label }: { label: string }) {
     try {
       const template = await this.mcpService.getDesignTemplate(label);
 
@@ -52,7 +53,7 @@ ${requiredFields}
         content: [
           {
             type: 'text',
-            text: `❌ テンプレート取得エラー: ${error.message}`,
+            text: `❌ テンプレート取得エラー: ${(error as AxiosError).message}`,
           },
         ],
       };
@@ -61,14 +62,24 @@ ${requiredFields}
 
   @Tool({
     name: 'create_document',
-    description:
-      'テンプレートを使用して文書（PDF）を作成します。まずget_document_templateでテンプレート情報を取得してから使用してください。',
+    description: `テンプレートを使用して文書（PDF）を作成します。まずget_document_templateでテンプレート情報を取得してから使用してください。
+    
+重要: labelパラメータを提供すると、fileNameは自動的にテンプレートから取得されます。カスタムfileNameを使用したい場合のみfileNameパラメータを指定してください。`,
     parameters: z.object({
       designId: z
         .string()
         .describe('デザインID（get_document_templateで取得）'),
       version: z.number().describe('テンプレートのバージョン'),
-      fileName: z.string().describe('ファイル名'),
+      fileName: z
+        .string()
+        .optional()
+        .describe(
+          'ファイル名（省略時はテンプレートのデフォルトファイル名を使用）',
+        ),
+      label: z
+        .string()
+        .optional()
+        .describe('文書タイプ（fileNameを自動取得する場合に必要）'),
       params: z
         .record(z.any())
         .describe('文書のパラメータ（テンプレートの必須フィールドに対応）'),
@@ -79,17 +90,18 @@ ${requiredFields}
       designId,
       version,
       fileName,
+      label,
       params,
     }: {
       designId: string;
       version: number;
-      fileName: string;
-      params: CreateDocumentDto;
+      fileName?: string;
+      label?: string;
+      params: Record<string, any>;
     },
     context: Context,
   ) {
     try {
-      // Progress report: Starting document creation
       await context.reportProgress({
         progress: 10,
         total: 100,
@@ -97,24 +109,59 @@ ${requiredFields}
 
       this.logger.log(`Creating document with designId: ${designId}`);
 
-      // Validate the document structure
+      let finalFileName = fileName;
+      if (!finalFileName && label) {
+        this.logger.log(
+          `Fetching template to get default fileName for label: ${label}`,
+        );
+        const template = await this.mcpService.getDesignTemplate(label);
+        finalFileName = template.contents.fileName;
+        this.logger.log(`Using template fileName: ${finalFileName}`);
+      }
+
+      if (!finalFileName) {
+        throw new Error(
+          'fileNameが必要です。fileNameパラメータを指定するか、labelパラメータを提供してテンプレートから自動取得してください。',
+        );
+      }
+
+      await context.reportProgress({
+        progress: 20,
+        total: 100,
+      } as Progress);
+
+      if (label) {
+        const validation = await this.mcpService.validateDocumentParams(
+          label,
+          params,
+        );
+        if (!validation.valid) {
+          throw new Error(
+            `パラメータ検証エラー:\n${validation.errors.join('\n')}`,
+          );
+        }
+      }
+
       const documentData: CreateDocumentDto = {
         designId: designId,
         version,
         content: {
-          fileName,
+          fileName: finalFileName,
           params,
         },
       };
 
       // Progress report: Sending request
       await context.reportProgress({
-        progress: 30,
+        progress: 50,
         total: 100,
       } as Progress);
 
       // Call the API to create the document
-      const result = await this.mcpService.createDocument(documentData);
+      const result = await this.mcpService.createDocument(
+        documentData,
+        label || '',
+      );
 
       // Progress report: Document created
       await context.reportProgress({
@@ -131,7 +178,7 @@ ${requiredFields}
             text: `✅ 文書作成成功！
 
 📄 **作成された文書:**
-- ファイル名: ${fileName}
+- ファイル名: ${finalFileName}
 - デザインID: ${designId}
 - パラメータ: ${JSON.stringify(params, null, 2)}
 
@@ -147,12 +194,13 @@ ${JSON.stringify(result, null, 2)}
         content: [
           {
             type: 'text',
-            text: `❌ 文書作成エラー: ${error.message}
+            text: `❌ 文書作成エラー: ${(error as AxiosError).message}
 
 🔍 **入力データを確認してください:**
 - デザインID: ${designId}
 - バージョン: ${version}
-- ファイル名: ${fileName}
+- ファイル名: ${fileName || '(テンプレートから自動取得)'}
+- ラベル: ${label || '(未指定)'}
 - パラメータ: ${JSON.stringify(params, null, 2)}`,
           },
         ],

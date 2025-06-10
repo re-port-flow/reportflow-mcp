@@ -41,7 +41,6 @@ export class McpService {
           },
         );
 
-      // Cache the template
       this.templateCache.set(label, response.data);
       this.logger.log(
         `Successfully fetched and cached template: ${response.data.designId}`,
@@ -131,7 +130,6 @@ export class McpService {
     };
   }
 
-  // Helper methods
   private getHeaders() {
     return {
       'Content-Type': 'application/json',
