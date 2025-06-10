@@ -21,6 +21,7 @@ export abstract class McpHandlerBase {
     mcpRequest: McpRequest,
   ): Context {
     // handless stateless traffic where notifications and progress are not supported
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     if ((mcpServer.server.transport as any).sessionId === undefined) {
       return this.createStatelessContext(mcpServer, mcpRequest);
     }

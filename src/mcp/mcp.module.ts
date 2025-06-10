@@ -12,23 +12,12 @@ import { HttpModule } from '@nestjs/axios';
 import { ConfigModule } from '@nestjs/config';
 import { McpController } from '@/mcp/mcp.controller';
 import { McpService } from '@/mcp/mcp.service';
-import { ApiService } from '@/mcp/api.service';
-import { GreetingResource } from '@/mcp/resources/greeting.resource';
-import { GreetingTool } from '@/mcp/resources/greeting.tool';
-import { GreetingPrompt } from '@/mcp/resources/greeting.prompt';
 import { DocumentTool } from '@/mcp/tools/document.tool';
-// import { DocumentTool } from '@/mcp/tools/document.tool';
 
 @Module({
   imports: [HttpModule, ConfigModule, DiscoveryModule],
   controllers: [McpController],
-  providers: [
-    McpRegistryService,
-    McpExecutorService,
-    McpService,
-    ApiService,
-    DocumentTool,
-  ],
+  providers: [McpRegistryService, McpExecutorService, McpService, DocumentTool],
 })
 export class McpModule {
   static forRoot(options: McpOptions): DynamicModule {

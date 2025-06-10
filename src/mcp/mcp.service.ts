@@ -1,11 +1,8 @@
 import { Injectable, Logger, HttpException, HttpStatus } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
-import { ConfigService } from '@nestjs/config';
-import { firstValueFrom } from 'rxjs';
-import { CreateMcpDto } from './dto/create-mcp.dto';
-import { UpdateMcpDto } from './dto/update-mcp.dto';
 import { CreateDocumentDto } from './dto/create-document.dto';
 import { DesignTemplateResponse } from '@/mcp/types/mcp.types';
+import { AxiosError, AxiosResponse } from 'axios';
 
 import { config as dotenvConfig } from 'dotenv';
 import * as process from 'node:process';
@@ -15,18 +12,17 @@ dotenvConfig({ path: '.env' });
 @Injectable()
 export class McpService {
   private readonly logger = new Logger(McpService.name);
-  private apiBaseUrl: string;
-  private appKey: string;
-  private secretKey: string;
+  private readonly apiBaseUrl: string;
+  private readonly appKey: string;
+  private readonly secretKey: string;
   private templateCache = new Map<string, DesignTemplateResponse>();
 
   constructor(private readonly httpService: HttpService) {
-    this.apiBaseUrl = `${process.env.API_BASE_URL || 'http://localhost:3002'}`;
-    this.appKey = `${process.env.APP_KEY || ''}`;
-    this.secretKey = `${process.env.SECRET_KEY || ''}`;
+    this.apiBaseUrl = process.env.API_BASE_URL || 'http://localhost:3002';
+    this.appKey = process.env.APP_KEY || '';
+    this.secretKey = process.env.SECRET_KEY || '';
   }
 
-  // Core MCP functionality
   async getDesignTemplate(label: string) {
     this.logger.log(`Fetching design template for label: ${label}`);
 
@@ -41,11 +37,7 @@ export class McpService {
           `${this.apiBaseUrl}/v1/getDesignTemplate`,
           { label: label },
           {
-            headers: {
-              AppKey: this.appKey,
-              SecretKey: this.secretKey,
-              'Content-Type': 'application/json',
-            },
+            headers: this.getHeaders(),
           },
         );
 
@@ -57,43 +49,54 @@ export class McpService {
 
       return response.data;
     } catch (error) {
-      this.logger.error(`Failed to get design template: ${error.message}`);
+      const axiosError = error as AxiosError;
+      const message = axiosError.message || 'Unknown error occurred';
+
+      this.logger.error(`Failed to get design template: ${message}`);
       throw new HttpException(
-        `Failed to get design template: ${error.message}`,
-        error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
+        `Failed to get design template: ${message}`,
+        axiosError.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
   }
 
-  async createDocument(data: CreateDocumentDto) {
-    this.logger.log(`Creating document with designId: ${data.designId}`);
+  async createDocument(data: CreateDocumentDto, label: string) {
+    const validation = await this.validateDocumentParams(
+      label,
+      data.content.params,
+    );
 
+    if (!validation.valid) {
+      throw new HttpException(
+        {
+          message: '文档参数验证失败',
+          errors: validation.errors,
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
     try {
-      const response = await this.httpService.axiosRef.post(
+      const response = await this.httpService.axiosRef.post<AxiosResponse>(
         `${this.apiBaseUrl}/v1/async/single`,
         data,
         {
-          headers: {
-            AppKey: this.appKey,
-            SecretKey: this.secretKey,
-            'Content-Type': 'application/json',
-          },
+          headers: this.getHeaders(),
         },
       );
 
-      this.logger.log(
-        `Successfully created document: ${response.data.id || 'success'}`,
-      );
       return {
         success: true,
         result: response.data,
         message: 'Document created successfully',
       };
     } catch (error) {
-      this.logger.error(`Failed to create document: ${error.message}`);
+      const axiosError = error as AxiosError;
+      const message = axiosError.message || 'Unknown error occurred';
+
+      this.logger.error(`Failed to create document: ${message}`);
       throw new HttpException(
-        `Failed to create document: ${error.message}`,
-        error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
+        `Failed to create document: ${message}`,
+        axiosError.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
   }
@@ -109,6 +112,7 @@ export class McpService {
         continue;
       }
 
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
       const value = params[key];
       const actualType = typeof value;
 
@@ -127,50 +131,12 @@ export class McpService {
     };
   }
 
-  // Standard CRUD operations (optional - for local template management)
-  create(createMcpDto: CreateMcpDto) {
-    // This could save templates locally if needed
-    return 'This action adds a new mcp template';
-  }
-
-  findAll() {
-    // Return all cached templates
-    const templates = Array.from(this.templateCache.entries()).map(
-      ([label, template]) => ({
-        label,
-        designId: template.designId,
-        version: template.version,
-        parameters: Object.keys(template.contents.params),
-      }),
-    );
-
-    return {
-      cachedTemplates: templates,
-      count: templates.length,
-    };
-  }
-
-  findOne(id: number) {
-    return `This action returns a #${id} mcp`;
-  }
-
-  update(id: number, updateMcpDto: UpdateMcpDto) {
-    return `This action updates a #${id} mcp`;
-  }
-
-  remove(id: number) {
-    // Clear from cache if exists
-    return `This action removes a #${id} mcp`;
-  }
-
   // Helper methods
   private getHeaders() {
-    const headers: Record<string, any> = {
+    return {
       'Content-Type': 'application/json',
-      appkey: this.appKey,
-      secretKey: this.secretKey,
+      AppKey: this.appKey,
+      SecretKey: this.secretKey,
     };
-
-    return headers;
   }
 }

@@ -77,6 +77,7 @@ export class McpToolsHandler extends McpHandlerBase {
           const contextId = ContextIdFactory.getByRequest(httpRequest);
           this.moduleRef.registerRequestByContextId(httpRequest, contextId);
 
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
           const toolInstance = await this.moduleRef.resolve(
             toolInfo.providerClass,
             contextId,
@@ -92,6 +93,7 @@ export class McpToolsHandler extends McpHandlerBase {
             );
           }
 
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment,@typescript-eslint/no-unsafe-call,@typescript-eslint/no-unsafe-member-access
           const result = await toolInstance[toolInfo.methodName].call(
             toolInstance,
             request.params.arguments,

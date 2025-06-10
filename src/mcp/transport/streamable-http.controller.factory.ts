@@ -232,7 +232,7 @@ export function createStreamableHttpController(
 
           // Set up cleanup when connection closes
           transport.onclose = () => {
-            this.cleanupSession(transport.sessionId!);
+            this.cleanupSession(transport.sessionId);
           };
         }
 

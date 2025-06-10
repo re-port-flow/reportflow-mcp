@@ -11,6 +11,7 @@ import {
 import { Request } from 'express';
 import { McpRegistryService } from '../mcp-registry.service';
 import { McpHandlerBase } from './mcp-handler.base';
+import { AxiosError } from 'axios';
 
 @Injectable({ scope: Scope.REQUEST })
 export class McpPromptsHandler extends McpHandlerBase {
@@ -64,6 +65,7 @@ export class McpPromptsHandler extends McpHandlerBase {
           const contextId = ContextIdFactory.getByRequest(httpRequest);
           this.moduleRef.registerRequestByContextId(httpRequest, contextId);
 
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
           const promptInstance = await this.moduleRef.resolve(
             promptInfo.providerClass,
             contextId,
@@ -80,6 +82,7 @@ export class McpPromptsHandler extends McpHandlerBase {
           const context = this.createContext(mcpServer, request);
           const methodName = promptInfo.methodName;
 
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment,@typescript-eslint/no-unsafe-call,@typescript-eslint/no-unsafe-member-access
           const result = await promptInstance[methodName].call(
             promptInstance,
             request.params.arguments,
@@ -94,7 +97,9 @@ export class McpPromptsHandler extends McpHandlerBase {
         } catch (error) {
           this.logger.error(error);
           return {
-            contents: [{ mimeType: 'text/plain', text: error.message }],
+            contents: [
+              { mimeType: 'text/plain', text: (error as AxiosError).message },
+            ],
             isError: true,
           };
         }

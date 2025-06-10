@@ -143,7 +143,6 @@ ${JSON.stringify(result, null, 2)}
         ],
       };
     } catch (error) {
-      this.logger.error('Document creation error:', error);
       return {
         content: [
           {
