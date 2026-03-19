@@ -1,0 +1,22 @@
+name: notify-slack
+on:
+  workflow_call:
+    inputs:
+      title: { type: string, required: true }
+      details: { type: string, required: true }
+      severity: { type: string, required: false, default: "error" } # success|info|warn|error|failure
+    secrets:
+      SLACK_BOT_TOKEN: { required: true }
+      SLACK_CHANNEL_ID: { required: true }
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: slackapi/slack-github-action@v2.1.1
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            text: "<!channel> ${{ inputs.severity == 'success' && ':white_check_mark:' || ':rotating_light:' }} ${{ inputs.title }} in ${{ github.repository }} on branch ${{ github.ref_name }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Action>"

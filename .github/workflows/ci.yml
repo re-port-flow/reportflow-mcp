@@ -1,0 +1,56 @@
+name: CI
+
+on: pull_request
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: ./app
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node v20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: 'yarn'
+          cache-dependency-path: './app/yarn.lock'
+      - name: Install modules
+        run: yarn install --frozen-lockfile
+      - name: Run ESLint
+        run: yarn lint --max-warnings 0
+      - name: Run TypeCheck
+        run: yarn build
+
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: ./app
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node v20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: 'yarn'
+          cache-dependency-path: './app/yarn.lock'
+      - name: Install modules
+        run: yarn install --frozen-lockfile
+      - name: Run Tests
+        run: yarn test --silent
+
+  notify:
+    needs: [lint, test]
+    if: ${{ always() && (needs.lint.result == 'failure' || needs.test.result == 'failure') }}
+    uses: ./.github/workflows/notify_slack.yml
+    with:
+      title: "CI失敗"
+      details: "リポジトリ: ${{ github.repository }} / 実行番号: ${{ github.run_id }}"
+      severity: "error"
+    secrets:
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
