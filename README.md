@@ -1,141 +1,136 @@
-# 文書生成MCPサーバー 使用説明書
+# @reportflow/mcp-server
 
-## 概要
-
-このMCP（Model Context Protocol）サーバーは、Claude Desktopアプリケーションと連携して、テンプレートベースの文書生成機能を提供します。領収書、請求書、見積書、納品書などの各種ビジネス文書をPDF形式で作成することができます。
+ReportFlow の PDF 帳票生成機能を Claude や AI エージェントから利用するための MCP（Model Context Protocol）サーバーです。
 
 ## 機能
 
-- **文書テンプレート取得**: 文書タイプに応じたテンプレート構造の確認
-- **PDF文書生成**: テンプレートを使用したカスタマイズされた文書の作成
-- **リアルタイム進捗表示**: 文書作成プロセスの進捗をリアルタイムで確認
-- **パラメータ検証**: 入力データの妥当性チェック
+| ツール | 概要 |
+|--------|------|
+| `list_templates` | ワークスペース内のデザイン一覧を取得 |
+| `get_design_parameters` | デザインに必要なパラメータ構造を取得 |
+| `generate_pdf_sync` | PDF を同期生成してローカルパスを返す |
+| `generate_pdf_async` | PDF を非同期生成して requestId を返す |
+| `generate_pdfs_sync` | 複数 PDF を一括同期生成（ZIP）してローカルパスを返す |
+| `generate_pdfs_async` | 複数 PDF を一括非同期生成して requestId を返す |
+| `download_file` | 非同期生成した単一 PDF をダウンロード |
+| `download_zip` | 非同期生成した ZIP をダウンロード |
 
-## セットアップ方法
+---
 
-### 1. 前提条件
+## セットアップ
 
-- Node.js v22以上がインストールされていること
-- Claude Desktopアプリケーションがインストールされていること
-- 文書生成APIサーバーが稼働していること（デフォルト: http://localhost:3002）
-
-### 2. プロジェクトのビルド
+### 1. インストール・ビルド
 
 ```bash
-# プロジェクトディレクトリに移動
-cd /Users/sudami/WebstormProjects/report-mcp
-
-# 依存関係のインストール
 npm install
-
-# プロジェクトのビルド
 npm run build
 ```
 
-### 3. Claude Desktop設定
+### 2. 環境変数
 
-Claude Desktop の設定ファイル（`claude_desktop_config.json`）に以下の設定を追加してください：
+`.env.sample` をコピーして `.env` を作成してください。
+
+```env
+# ReportFlow Content Service
+REPORTFLOW_API_BASE_URL=http://localhost:3002
+REPORTFLOW_APP_KEY=your-app-key
+REPORTFLOW_SECRET_KEY=your-secret-key
+```
+
+### 3. Claude Desktop 設定
+
+`~/Library/Application Support/Claude/claude_desktop_config.json` に以下を追加します。
 
 ```json
 {
   "mcpServers": {
-    "document-generation": {
+    "reportflow": {
       "command": "node",
-      "args": [
-        "/path/to/build"
-      ],
+      "args": ["/path/to/report-mcp/dist/index.js"],
       "env": {
-        "API_BASE_URL": "http://localhost:3002",
-        "APP_KEY": "xxx",
-        "SECRET_KEY": "xxxxx",
-        "PATH": "/opt/homebrew/opt/node@22/bin:/usr/local/bin:/usr/bin:/bin"
+        "REPORTFLOW_API_BASE_URL": "http://localhost:3002",
+        "REPORTFLOW_APP_KEY": "your-app-key",
+        "REPORTFLOW_SECRET_KEY": "your-secret-key",
+        "PATH": "/usr/local/bin:/usr/bin:/bin"
       }
     }
   }
 }
 ```
 
-### 4. 環境変数の設定
+---
 
-プロジェクトルートに`.env`ファイルを作成し、以下の環境変数を設定してください：
+## 帳票生成の基本フロー
 
-```env
-API_BASE_URL=
-APP_KEY=
-SECRET_KEY=
+### 1. テンプレート選択 → パラメータ確認 → PDF 生成（同期）
+
+```
+1. list_templates          → designId 一覧を確認
+2. get_design_parameters   → designId でパラメータ構造を確認
+3. generate_pdf_sync       → パラメータを埋めて PDF を即時生成
 ```
 
-## 利用可能なツール
-
-### 1. `get_document_template`
-
-文書タイプのテンプレート構造を取得して表示します。
-
-**パラメータ:**
-- `label` (string): 文書タイプ（例: "領収書", "請求書", "見積書", "納品書"）
-
-**使用例:**
+**Claude への指示例:**
 ```
-テンプレート情報を教えて。文書タイプは「領収書」です。
+請求書テンプレートの一覧を見せて、その中から「請求書」を選んで
+以下の内容で PDF を作成してください：
+- 宛名: 株式会社サンプル
+- 金額: 50,000円
+- 発行日: 2026-03-13
 ```
 
-**出力内容:**
-- デザインID
-- バージョン
-- ファイル名
-- 必須フィールド一覧とその型
+### 2. 非同期生成（大量ファイル向け）
 
-### 2. `create_document`
-
-テンプレートを使用してPDF文書を作成します。
-
-**パラメータ:**
-- `designId` (string): デザインID（get_document_templateで取得）
-- `version` (number): テンプレートのバージョン
-- `fileName` (string, optional): ファイル名（省略時はテンプレートのデフォルトを使用）
-- `label` (string, optional): 文書タイプ（fileNameを自動取得する場合に必要）
-- `params` (object): 文書のパラメータ（テンプレートの必須フィールドに対応）
-
-**重要な注意点:**
-- `label`パラメータを提供すると、`fileName`は自動的にテンプレートから取得されます
-- カスタムファイル名を使用したい場合のみ`fileName`パラメータを指定してください
-- まず`get_document_template`でテンプレート情報を取得してから使用することを推奨します
-
-## 使用例
-
-### 例1: 領収書テンプレートの確認
-
-**Claude への指示:**
 ```
-領収書のテンプレート構造を教えてください。
+1. list_templates          → designId 一覧を確認
+2. get_design_parameters   → パラメータ構造を確認
+3. generate_pdfs_async     → 複数件を非同期生成
+4. download_zip            → requestId で ZIP をダウンロード
 ```
 
-**実行されるツール:**
-- `get_document_template` with `label: "領収書"`
+---
 
-### 例2: 領収書の作成
+## CLAUDE.md への追加スニペット
 
-**Claude への指示:**
+ReportFlow MCP サーバーを使うプロジェクトの `CLAUDE.md` に以下を追記することで、Claude が帳票生成ツールを正しく活用できるようになります。
+
+````markdown
+## ReportFlow MCP 帳票生成
+
+### 利用可能ツール
+
+| ツール | 用途 |
+|--------|------|
+| `list_templates` | デザイン一覧取得（designId の確認に使う） |
+| `get_design_parameters` | 指定デザインの必要パラメータ構造を取得 |
+| `generate_pdf_sync` | 単一 PDF を即時生成 → ローカルパスを返す |
+| `generate_pdf_async` | 単一 PDF を非同期生成 → requestId + fileId を返す |
+| `generate_pdfs_sync` | 複数 PDF を一括即時生成 → ZIP パスを返す |
+| `generate_pdfs_async` | 複数 PDF を一括非同期生成 → requestId を返す |
+| `download_file` | requestId + fileId でファイルをダウンロード |
+| `download_zip` | requestId で ZIP をダウンロード |
+
+### 帳票生成の流れ
+
+1. `list_templates` でデザイン一覧を取得し、目的の `id`（designId）を確認
+2. `get_design_parameters` で `designId` と `version`（latestVersion）を指定してパラメータ構造を確認
+3. パラメータを埋めて `generate_pdf_sync` で PDF を生成
+
+### 注意事項
+
+- `params` の型は `get_design_parameters` の結果に従うこと
+  - `"string"` → 文字列、`"number"` → 数値、`"date"` → "YYYY-MM-DD" 形式
+  - 配列型（`[{...}]`）はオブジェクトの配列を渡す
+- `version` は `list_templates` で返る `latestVersion` を使用
+- 同期生成（sync）は即座にファイルパスが返る。件数が多い場合は async を使うこと
+````
+
+---
+
+## 開発
+
+```bash
+npm test      # ユニットテスト実行
+npm run build # TypeScript ビルド
+npm run lint  # ESLint チェック
 ```
-以下の情報で領収書を作成してください：
-- 会社名: 株式会社サンプル
-- 金額: 50000
-- 日付: 2024-01-15
-- 項目: コンサルティング料
-```
-
-**実行の流れ:**
-1. `get_document_template`で領収書テンプレートを取得
-2. 必要なパラメータを確認
-3. `create_document`で文書を作成
-
-### 例3: カスタムファイル名での文書作成
-
-**Claude への指示:**
-```
-請求書を作成してください。ファイル名は「invoice_2024_001.pdf」にしてください。
-- 顧客名: 田中太郎
-- 金額: 120000
-- 請求日: 2024-01-20
-```
-
