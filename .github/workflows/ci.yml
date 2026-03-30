@@ -8,7 +8,7 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: ./app
+        working-directory: ./
     steps:
       - uses: actions/checkout@v4
       - name: Setup Node v20
@@ -16,7 +16,7 @@ jobs:
         with:
           node-version: "20.x"
           cache: 'yarn'
-          cache-dependency-path: './app/yarn.lock'
+          cache-dependency-path: './yarn.lock'
       - name: Install modules
         run: yarn install --frozen-lockfile
       - name: Run ESLint
@@ -29,7 +29,7 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: ./app
+        working-directory: ./
     steps:
       - uses: actions/checkout@v4
       - name: Setup Node v20
@@ -37,7 +37,7 @@ jobs:
         with:
           node-version: "20.x"
           cache: 'yarn'
-          cache-dependency-path: './app/yarn.lock'
+          cache-dependency-path: './yarn.lock'
       - name: Install modules
         run: yarn install --frozen-lockfile
       - name: Run Tests

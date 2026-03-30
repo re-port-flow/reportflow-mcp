@@ -1,4 +1,3 @@
-import { z } from 'zod';
 import { getDesignParameters } from '../client.js';
 
 export const getDesignParametersTool = {
@@ -6,15 +5,6 @@ export const getDesignParametersTool = {
   description:
     'デザインテンプレートのパラメータ構造を取得します。帳票生成に必要なパラメータの型・構造を確認できます。',
 };
-
-export const getDesignParametersInputSchema = z.object({
-  designId: z.string().describe('デザインID（UUID形式）'),
-  version: z
-    .number()
-    .int()
-    .optional()
-    .describe('バージョン番号（省略時は最新版）'),
-});
 
 export type GetDesignParametersInput = {
   designId: string;

@@ -15,7 +15,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
-    "lint": "eslint \"src/**/*.ts\"",
+    "lint": "eslint \"src/**/*.ts\" --ignore-pattern \"src/**/*.spec.ts\"",
     "format": "prettier --write \"src/**/*.ts\"",
     "test": "jest"
   },
@@ -45,6 +45,7 @@
   },
   "jest": {
     "testEnvironment": "node",
+    "setupFiles": ["./src/test-setup.ts"],
     "transform": {
       "^.+\\.tsx?$": ["ts-jest", {
         "tsconfig": {

@@ -7,13 +7,6 @@ const mockedAxios = axios as jest.Mocked<typeof axios>;
 describe('handleGetDesignParameters', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    process.env['REPORTFLOW_APP_KEY'] = 'test-app-key';
-    process.env['REPORTFLOW_SECRET_KEY'] = 'test-secret-key';
-  });
-
-  afterEach(() => {
-    delete process.env['REPORTFLOW_APP_KEY'];
-    delete process.env['REPORTFLOW_SECRET_KEY'];
   });
 
   it('正常系: パラメータ構造を返す', async () => {
@@ -46,9 +39,7 @@ describe('handleGetDesignParameters', () => {
     expect(result.isError).toBeUndefined();
     expect(JSON.parse(result.content[0].text)).toEqual(mockData);
 
-    const callUrl = (
-      (mockedAxios.get as jest.Mock).mock.calls[0] as [string]
-    )[0];
+    const callUrl = (mockedAxios.get as jest.Mock).mock.calls[0][0] as string;
     expect(callUrl).toContain('version=2');
   });
 
