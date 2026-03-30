@@ -11,21 +11,21 @@ export type GetDesignParametersInput = {
   version?: number;
 };
 
-export type McpToolResult = {
-  content: Array<{ type: 'text'; text: string }>;
-  isError?: boolean;
+export type GetDesignParametersResult = {
+  content: [{ type: 'text'; text: string }];
+  isError?: true;
 };
 
 export const handleGetDesignParameters = async (
   input: GetDesignParametersInput,
-): Promise<McpToolResult> => {
+): Promise<GetDesignParametersResult> => {
   try {
     const result = await getDesignParameters(input.designId, input.version);
     return {
       content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
     };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
     return {
       content: [{ type: 'text', text: `エラー: ${message}` }],
       isError: true,

@@ -30,7 +30,7 @@ export type DesignParameter =
 
 export type GetDesignParametersResponse = Record<string, DesignParameter>;
 
-export type ContentParam = Record<string, any>;
+export type ContentParam = Record<string, unknown>;
 
 export type ContentDto = {
   fileName: string;
