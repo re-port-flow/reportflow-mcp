@@ -50,7 +50,7 @@
       }]
     },
     "moduleFileExtensions": ["ts", "js", "json"],
-    "testMatch": ["**/src/tools/*.spec.ts"],
+    "testMatch": ["**/src/**/*.spec.ts"],
     "moduleNameMapper": {
       "^(\\.{1,2}/.*)\\.js$": "$1"
     }

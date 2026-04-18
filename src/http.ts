@@ -23,7 +23,7 @@ async function parseErrorMessage(res: Response): Promise<string> {
 }
 
 function withTimeout(
-  signal: AbortSignal | undefined,
+  signal: AbortSignal | null | undefined,
   ms: number,
 ): [AbortSignal, () => void] {
   const controller = new AbortController();
@@ -31,12 +31,20 @@ function withTimeout(
     () => controller.abort(new Error(`Request timed out after ${ms}ms`)),
     ms,
   );
-  const clear = () => clearTimeout(timer);
 
+  const onAbort = () => controller.abort(signal?.reason);
   if (signal) {
-    signal.addEventListener('abort', () => controller.abort(signal.reason));
+    if (signal.aborted) {
+      onAbort();
+    } else {
+      signal.addEventListener('abort', onAbort);
+    }
   }
 
+  const clear = () => {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+  };
   return [controller.signal, clear];
 }
 
@@ -45,17 +53,14 @@ export async function fetchJson<T>(
   init: RequestInit & { timeoutMs?: number } = {},
 ): Promise<T> {
   const { timeoutMs = DEFAULT_TIMEOUT_MS, signal, ...rest } = init;
-  const [timeoutSignal, clearTimer] = withTimeout(
-    signal as AbortSignal | undefined,
-    timeoutMs,
-  );
+  const [timeoutSignal, clearTimer] = withTimeout(signal, timeoutMs);
   try {
     const res = await fetch(url, { ...rest, signal: timeoutSignal });
     if (!res.ok) {
       const msg = await parseErrorMessage(res);
       throw new HttpError(res.status, `[${res.status}] ${msg}`);
     }
-    return res.json() as Promise<T>;
+    return await (res.json() as Promise<T>);
   } finally {
     clearTimer();
   }
@@ -66,17 +71,14 @@ export async function fetchBinary(
   init: RequestInit & { timeoutMs?: number } = {},
 ): Promise<ArrayBuffer> {
   const { timeoutMs = DEFAULT_TIMEOUT_MS, signal, ...rest } = init;
-  const [timeoutSignal, clearTimer] = withTimeout(
-    signal as AbortSignal | undefined,
-    timeoutMs,
-  );
+  const [timeoutSignal, clearTimer] = withTimeout(signal, timeoutMs);
   try {
     const res = await fetch(url, { ...rest, signal: timeoutSignal });
     if (!res.ok) {
       const msg = await parseErrorMessage(res);
       throw new HttpError(res.status, `[${res.status}] ${msg}`);
     }
-    return res.arrayBuffer();
+    return await res.arrayBuffer();
   } finally {
     clearTimer();
   }
