@@ -19,25 +19,7 @@ ReportFlow の PDF 帳票生成機能を Claude や AI エージェントから�
 
 ## セットアップ
 
-### 1. インストール・ビルド
-
-```bash
-npm install
-npm run build
-```
-
-### 2. 環境変数
-
-`.env.sample` をコピーして `.env` を作成してください。
-
-```env
-# ReportFlow Content Service
-REPORTFLOW_API_BASE_URL=http://localhost:3002
-REPORTFLOW_APP_KEY=your-app-key
-REPORTFLOW_SECRET_KEY=your-secret-key
-```
-
-### 3. Claude Desktop 設定
+### Claude Desktop
 
 `~/Library/Application Support/Claude/claude_desktop_config.json` に以下を追加します。
 
@@ -45,18 +27,48 @@ REPORTFLOW_SECRET_KEY=your-secret-key
 {
   "mcpServers": {
     "reportflow": {
-      "command": "node",
-      "args": ["/path/to/report-mcp/dist/index.js"],
+      "command": "npx",
+      "args": ["-y", "@reportflow/mcp-server"],
       "env": {
-        "REPORTFLOW_API_BASE_URL": "http://localhost:3002",
-        "REPORTFLOW_APP_KEY": "your-app-key",
-        "REPORTFLOW_SECRET_KEY": "your-secret-key",
-        "PATH": "/usr/local/bin:/usr/bin:/bin"
+        "REPORTFLOW_APP_KEY": "your-app-key"
       }
     }
   }
 }
 ```
+
+### Claude Code
+
+プロジェクトの `.mcp.json` に以下を追加します。
+
+```json
+{
+  "mcpServers": {
+    "reportflow": {
+      "command": "npx",
+      "args": ["-y", "@reportflow/mcp-server"],
+      "env": {
+        "REPORTFLOW_APP_KEY": "your-app-key"
+      }
+    }
+  }
+}
+```
+
+---
+
+## 環境変数
+
+| 変数名 | 必須 | デフォルト | 説明 |
+|--------|------|-----------|------|
+| `REPORTFLOW_API_BASE_URL` | 任意 | `https://api.re-port-flow.com` | ReportFlow Content Service の URL |
+| `REPORTFLOW_APP_KEY` | appkey モード時必須 | — | ReportFlow の App Key |
+| `REPORTFLOW_AUTH_MODE` | 任意 | `appkey` | 認証モード: `appkey` または `oauth2` |
+| `REPORTFLOW_AUTH_URL` | oauth2 モード時任意 | `http://localhost:3000` | OAuth2 トークン発行エンドポイントのベース URL |
+| `REPORTFLOW_CLIENT_ID` | oauth2 モード時必須 | — | OAuth2 client_id |
+| `REPORTFLOW_CLIENT_SECRET` | oauth2 モード時必須 | — | OAuth2 client_secret |
+
+通常は `REPORTFLOW_APP_KEY` のみ設定してください。
 
 ---
 

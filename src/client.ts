@@ -3,7 +3,7 @@ import { requestWithAuth } from './auth.js';
 import { saveTempFile } from './file-helper.js';
 
 const getBaseUrl = () =>
-  process.env['REPORTFLOW_API_BASE_URL'] ?? 'http://localhost:3002';
+  process.env['REPORTFLOW_API_BASE_URL'] ?? 'https://api.re-port-flow.com';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

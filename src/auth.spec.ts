@@ -14,16 +14,19 @@ function mockTokenResponse(token: string, expiresIn = 3600) {
   });
 }
 
-const originalEnv = process.env;
+const MANAGED_ENV_KEYS = [
+  'REPORTFLOW_AUTH_MODE',
+  'REPORTFLOW_APP_KEY',
+  'REPORTFLOW_CLIENT_ID',
+  'REPORTFLOW_CLIENT_SECRET',
+  'REPORTFLOW_AUTH_URL',
+] as const;
 
 beforeEach(() => {
+  global.fetch = mockFetch;
   jest.clearAllMocks();
   invalidateToken();
-  process.env = { ...originalEnv };
-});
-
-afterAll(() => {
-  process.env = originalEnv;
+  MANAGED_ENV_KEYS.forEach((key) => delete process.env[key]);
 });
 
 describe('getAuthHeaders — appkey mode', () => {
@@ -87,22 +90,24 @@ describe('getAuthHeaders — oauth2 mode', () => {
     );
     global.fetch = delayedFetch;
 
-    const [p1, p2] = [getAuthHeaders(), getAuthHeaders()];
+    try {
+      const [p1, p2] = [getAuthHeaders(), getAuthHeaders()];
 
-    resolveToken({
-      ok: true,
-      status: 200,
-      statusText: 'OK',
-      json: () => Promise.resolve({ access_token: 'shared-token', expires_in: 3600 }),
-      arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)),
-    });
+      resolveToken({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve({ access_token: 'shared-token', expires_in: 3600 }),
+        arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)),
+      });
 
-    const [h1, h2] = await Promise.all([p1, p2]);
-    expect(h1).toEqual({ Authorization: 'Bearer shared-token' });
-    expect(h2).toEqual({ Authorization: 'Bearer shared-token' });
-    expect(delayedFetch).toHaveBeenCalledTimes(1);
-
-    global.fetch = mockFetch;
+      const [h1, h2] = await Promise.all([p1, p2]);
+      expect(h1).toEqual({ Authorization: 'Bearer shared-token' });
+      expect(h2).toEqual({ Authorization: 'Bearer shared-token' });
+      expect(delayedFetch).toHaveBeenCalledTimes(1);
+    } finally {
+      global.fetch = mockFetch;
+    }
   });
 
   it('REPORTFLOW_CLIENT_ID 未設定時にエラーを投げる', async () => {
