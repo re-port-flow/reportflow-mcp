@@ -1,25 +1,9 @@
-import axios from 'axios';
+import { fetchJson, fetchBinary } from './http.js';
+import { requestWithAuth } from './auth.js';
 import { saveTempFile } from './file-helper.js';
 
-const getContentServiceConfig = () => {
-  const baseUrl =
-    process.env['REPORTFLOW_API_BASE_URL'] ?? 'http://localhost:3002';
-  const appKey = process.env['REPORTFLOW_APP_KEY'];
-
-  if (!appKey) {
-    throw new Error('REPORTFLOW_APP_KEY must be set in environment variables.');
-  }
-
-  return { baseUrl, appKey };
-};
-
-const getContentServiceHeaders = () => {
-  const { appKey } = getContentServiceConfig();
-  return {
-    'Content-Type': 'application/json',
-    appkey: appKey,
-  };
-};
+const getBaseUrl = () =>
+  process.env['REPORTFLOW_API_BASE_URL'] ?? 'http://localhost:3002';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -75,17 +59,16 @@ export const getDesignParameters = async (
   designId: string,
   version?: number,
 ): Promise<GetDesignParametersResponse> => {
-  const { baseUrl } = getContentServiceConfig();
-  const url = new URL(`/v1/file/design/parameter/${designId}`, baseUrl);
+  const url = new URL(`/v1/file/design/parameter/${designId}`, getBaseUrl());
   if (version != null) {
     url.searchParams.set('version', String(version));
   }
 
-  const response = await axios.get<GetDesignParametersResponse>(
-    url.toString(),
-    { headers: getContentServiceHeaders() },
+  return requestWithAuth((headers) =>
+    fetchJson<GetDesignParametersResponse>(url.toString(), {
+      headers: { ...headers, 'Content-Type': 'application/json' },
+    }),
   );
-  return response.data;
 };
 
 export const generatePdfSync = async (body: {
@@ -93,13 +76,15 @@ export const generatePdfSync = async (body: {
   version: number;
   content: ContentDto;
 }): Promise<string> => {
-  const { baseUrl } = getContentServiceConfig();
-  const url = new URL('/v1/file/sync/single', baseUrl);
-  const response = await axios.post(url.toString(), body, {
-    headers: getContentServiceHeaders(),
-    responseType: 'arraybuffer',
-  });
-  return saveTempFile(response.data as ArrayBuffer, body.content.fileName);
+  const url = new URL('/v1/file/sync/single', getBaseUrl());
+  const data = await requestWithAuth((headers) =>
+    fetchBinary(url.toString(), {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  );
+  return saveTempFile(data, body.content.fileName);
 };
 
 export const generatePdfAsync = async (body: {
@@ -107,12 +92,14 @@ export const generatePdfAsync = async (body: {
   version: number;
   content: ContentDto;
 }): Promise<ExportResponse> => {
-  const { baseUrl } = getContentServiceConfig();
-  const url = new URL('/v1/file/async/single', baseUrl);
-  const response = await axios.post<ExportResponse>(url.toString(), body, {
-    headers: getContentServiceHeaders(),
-  });
-  return response.data;
+  const url = new URL('/v1/file/async/single', getBaseUrl());
+  return requestWithAuth((headers) =>
+    fetchJson<ExportResponse>(url.toString(), {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  );
 };
 
 export const generatePdfsSync = async (body: {
@@ -120,13 +107,15 @@ export const generatePdfsSync = async (body: {
   version: number;
   contents: ContentDto[];
 }): Promise<string> => {
-  const { baseUrl } = getContentServiceConfig();
-  const url = new URL('/v1/file/sync/multiple', baseUrl);
-  const response = await axios.post(url.toString(), body, {
-    headers: getContentServiceHeaders(),
-    responseType: 'arraybuffer',
-  });
-  return saveTempFile(response.data as ArrayBuffer, 'download.zip');
+  const url = new URL('/v1/file/sync/multiple', getBaseUrl());
+  const data = await requestWithAuth((headers) =>
+    fetchBinary(url.toString(), {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  );
+  return saveTempFile(data, 'download.zip');
 };
 
 export const generatePdfsAsync = async (body: {
@@ -134,12 +123,14 @@ export const generatePdfsAsync = async (body: {
   version: number;
   contents: ContentDto[];
 }): Promise<ExportResponse> => {
-  const { baseUrl } = getContentServiceConfig();
-  const url = new URL('/v1/file/async/multiple', baseUrl);
-  const response = await axios.post<ExportResponse>(url.toString(), body, {
-    headers: getContentServiceHeaders(),
-  });
-  return response.data;
+  const url = new URL('/v1/file/async/multiple', getBaseUrl());
+  return requestWithAuth((headers) =>
+    fetchJson<ExportResponse>(url.toString(), {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  );
 };
 
 export const downloadFile = async (
@@ -147,39 +138,27 @@ export const downloadFile = async (
   fileId: string,
   fileName?: string,
 ): Promise<string> => {
-  const { baseUrl } = getContentServiceConfig();
-  const url = new URL(`/v1/file/download/${requestId}/${fileId}`, baseUrl);
-  const response = await axios.get(url.toString(), {
-    headers: getContentServiceHeaders(),
-    responseType: 'arraybuffer',
-  });
-  return saveTempFile(
-    response.data as ArrayBuffer,
-    fileName ?? `${fileId}.pdf`,
+  const url = new URL(`/v1/file/download/${requestId}/${fileId}`, getBaseUrl());
+  const data = await requestWithAuth((headers) =>
+    fetchBinary(url.toString(), { headers }),
   );
+  return saveTempFile(data, fileName ?? `${fileId}.pdf`);
 };
 
 export const downloadZip = async (
   requestId: string,
   fileName?: string,
 ): Promise<string> => {
-  const { baseUrl } = getContentServiceConfig();
-  const url = new URL(`/v1/file/download/${requestId}`, baseUrl);
-  const response = await axios.get(url.toString(), {
-    headers: getContentServiceHeaders(),
-    responseType: 'arraybuffer',
-  });
-  return saveTempFile(
-    response.data as ArrayBuffer,
-    fileName ?? `${requestId}.zip`,
+  const url = new URL(`/v1/file/download/${requestId}`, getBaseUrl());
+  const data = await requestWithAuth((headers) =>
+    fetchBinary(url.toString(), { headers }),
   );
+  return saveTempFile(data, fileName ?? `${requestId}.zip`);
 };
 
 export const listDesigns = async (): Promise<DesignListResponse> => {
-  const { baseUrl } = getContentServiceConfig();
-  const url = new URL('/v1/file/designs', baseUrl);
-  const response = await axios.get<DesignListResponse>(url.toString(), {
-    headers: getContentServiceHeaders(),
-  });
-  return response.data;
+  const url = new URL('/v1/file/designs', getBaseUrl());
+  return requestWithAuth((headers) =>
+    fetchJson<DesignListResponse>(url.toString(), { headers }),
+  );
 };

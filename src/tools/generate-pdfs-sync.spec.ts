@@ -1,12 +1,27 @@
-import axios from 'axios';
 import * as fileHelper from '../file-helper';
 import { handleGeneratePdfsSync } from './generate-pdfs-sync';
 
-jest.mock('axios');
+jest.mock('../auth', () => ({
+  requestWithAuth: jest.fn((fn: (h: Record<string, string>) => unknown) =>
+    fn({ appkey: 'test-app-key' }),
+  ),
+  invalidateToken: jest.fn(),
+}));
 jest.mock('../file-helper');
 
-const mockedAxios = axios as jest.Mocked<typeof axios>;
 const mockedFileHelper = fileHelper as jest.Mocked<typeof fileHelper>;
+const mockFetch = jest.fn();
+global.fetch = mockFetch;
+
+function mockBinaryResponse(buffer: ArrayBuffer, status = 200) {
+  mockFetch.mockResolvedValue({
+    ok: status < 400,
+    status,
+    statusText: status < 400 ? 'OK' : 'Error',
+    json: () => Promise.resolve({}),
+    arrayBuffer: () => Promise.resolve(buffer),
+  });
+}
 
 describe('handleGeneratePdfsSync', () => {
   beforeEach(() => {
@@ -24,18 +39,16 @@ describe('handleGeneratePdfsSync', () => {
   };
 
   it('正常系: ZIPファイルパスを返す', async () => {
-    const mockBuffer = Buffer.from('ZIP_CONTENT');
-    mockedAxios.post = jest.fn().mockResolvedValue({ data: mockBuffer });
+    mockBinaryResponse(Buffer.from('ZIP_CONTENT').buffer);
 
     const result = await handleGeneratePdfsSync(input);
 
     expect(result.isError).toBeUndefined();
-    const parsed = JSON.parse(result.content[0].text);
-    expect(parsed.filePath).toBe('/tmp/download.zip');
+    expect(JSON.parse(result.content[0].text).filePath).toBe('/tmp/download.zip');
   });
 
   it('エラー系: APIエラー時にisError=trueを返す', async () => {
-    mockedAxios.post = jest.fn().mockRejectedValue(new Error('Server Error'));
+    mockFetch.mockRejectedValue(new Error('Server Error'));
 
     const result = await handleGeneratePdfsSync(input);
 

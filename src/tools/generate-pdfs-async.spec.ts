@@ -1,13 +1,27 @@
-import axios from 'axios';
 import { handleGeneratePdfsAsync } from './generate-pdfs-async';
 
-jest.mock('axios');
-const mockedAxios = axios as jest.Mocked<typeof axios>;
+jest.mock('../auth', () => ({
+  requestWithAuth: jest.fn((fn: (h: Record<string, string>) => unknown) =>
+    fn({ appkey: 'test-app-key' }),
+  ),
+  invalidateToken: jest.fn(),
+}));
+
+const mockFetch = jest.fn();
+global.fetch = mockFetch;
+
+function mockJsonResponse(data: unknown, status = 200) {
+  mockFetch.mockResolvedValue({
+    ok: status < 400,
+    status,
+    statusText: status < 400 ? 'OK' : 'Error',
+    json: () => Promise.resolve(data),
+    arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)),
+  });
+}
 
 describe('handleGeneratePdfsAsync', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-  });
+  beforeEach(() => jest.clearAllMocks());
 
   const input = {
     designId: 'design-uuid-1',
@@ -23,21 +37,11 @@ describe('handleGeneratePdfsAsync', () => {
       requestId: 'req-uuid-2',
       url: 'https://example.com/download/req-uuid-2',
       files: [
-        {
-          fileName: 'invoice1.pdf',
-          fileId: 'file-uuid-1',
-          params: { name: '山田太郎' },
-          share: { shareType: 'private', passcodeEnabled: false },
-        },
-        {
-          fileName: 'invoice2.pdf',
-          fileId: 'file-uuid-2',
-          params: { name: '鈴木次郎' },
-          share: { shareType: 'private', passcodeEnabled: false },
-        },
+        { fileName: 'invoice1.pdf', fileId: 'file-uuid-1', params: { name: '山田太郎' }, share: { shareType: 'private', passcodeEnabled: false } },
+        { fileName: 'invoice2.pdf', fileId: 'file-uuid-2', params: { name: '鈴木次郎' }, share: { shareType: 'private', passcodeEnabled: false } },
       ],
     };
-    mockedAxios.post = jest.fn().mockResolvedValue({ data: mockData });
+    mockJsonResponse(mockData);
 
     const result = await handleGeneratePdfsAsync(input);
 
@@ -46,7 +50,7 @@ describe('handleGeneratePdfsAsync', () => {
   });
 
   it('エラー系: APIエラー時にisError=trueを返す', async () => {
-    mockedAxios.post = jest.fn().mockRejectedValue(new Error('Timeout'));
+    mockFetch.mockRejectedValue(new Error('Timeout'));
 
     const result = await handleGeneratePdfsAsync(input);
 
