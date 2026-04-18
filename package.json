@@ -4,6 +4,9 @@
   "description": "ReportFlow MCP Server - PDF report generation for Claude and AI agents",
   "keywords": ["mcp", "pdf", "report", "reportflow", "claude", "anthropic", "ai-agent"],
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "reportflow-mcp-server": "dist/index.js"
   },
