@@ -72,7 +72,7 @@ Claude が `authenticate` ツールを呼び、ブラウザが起動します。
 |--------|------|-----------|------|
 | `REPORTFLOW_CLIENT_ID` | 任意 | `reportflow-mcp` | 公式 client_id を上書きする場合のみ |
 | `REPORTFLOW_API_BASE_URL` | 任意 | `https://api.re-port-flow.com` | Content Service の URL (staging/local で上書き) |
-| `REPORTFLOW_AUTH_URL` | 任意 | `https://re-port-flow.com/api/v1` | reposts-api OAuth2 ベース URL (staging/local で上書き) |
+| `REPORTFLOW_AUTH_URL` | 任意 | `https://re-port-flow.com/api/v1` | ReportFlow OAuth2 サーバーのベース URL (staging/local で上書き) |
 | `REPORTFLOW_CALLBACK_PORT` | 任意 | `53682` | ローカルコールバックサーバーのポート (redirect_uri と一致必須) |
 | `REPORTFLOW_SCOPE` | 任意 | `openid profile designs:read designs:write templates:read templates:write pdf:generate` | 要求スコープ (空白区切り) |
 | `REPORTFLOW_TOKEN_STORE` | 任意 | 自動 (keychain → file) | `keychain` / `file` 強制指定 |

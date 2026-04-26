@@ -9,7 +9,7 @@ import {
 import { createTokenStore, TokenSet } from './token-store/index.js';
 
 const DEFAULT_AUTH_URL = 'https://re-port-flow.com/api/v1';
-// 公式 ReportFlow MCP の OAuth client_id (reposts-api PRJ-3-300 で seed 済み)。
+// 公式 ReportFlow MCP の OAuth client_id (ReportFlow 側で配布済の Public client)。
 // 環境変数 REPORTFLOW_CLIENT_ID で上書き可能。
 const DEFAULT_CLIENT_ID = 'reportflow-mcp';
 const DEFAULT_SCOPE =

@@ -4,6 +4,15 @@
   "description": "ReportFlow MCP Server - PDF report generation for Claude and AI agents",
   "keywords": ["mcp", "pdf", "report", "reportflow", "claude", "anthropic", "ai-agent"],
   "license": "MIT",
+  "author": "株式会社マネプラ",
+  "homepage": "https://github.com/monepla/report-mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/monepla/report-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/monepla/report-mcp/issues"
+  },
   "publishConfig": {
     "access": "public"
   },
@@ -15,7 +24,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
     "lint": "eslint \"src/**/*.ts\" --ignore-pattern \"src/**/*.spec.ts\"",
