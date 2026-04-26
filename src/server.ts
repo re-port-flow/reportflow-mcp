@@ -27,6 +27,7 @@ import {
 } from './tools/generate-pdfs-async.js';
 import { downloadFileTool, handleDownloadFile } from './tools/download-file.js';
 import { downloadZipTool, handleDownloadZip } from './tools/download-zip.js';
+import { authenticateTool, handleAuthenticate } from './tools/authenticate.js';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const pkg = require('../package.json') as { name: string; version: string };
@@ -68,6 +69,19 @@ export const startServer = async (): Promise<void> => {
     name: pkg.name,
     version: pkg.version,
   });
+
+  // authenticate (OAuth2 PKCE flow — call this first or when other tools error with auth)
+  server.tool(
+    authenticateTool.name,
+    authenticateTool.description,
+    {
+      force: z
+        .boolean()
+        .optional()
+        .describe('既存トークンを破棄して再認証する場合 true'),
+    },
+    async (input) => handleAuthenticate(input),
+  );
 
   // get_design_parameters
   server.tool(

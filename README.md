@@ -6,6 +6,7 @@ ReportFlow の PDF 帳票生成機能を Claude や AI エージェントから�
 
 | ツール | 概要 |
 |--------|------|
+| `authenticate` | **初回認証 / 再認証**。ブラウザで OAuth2 + ワークスペース選択を行い、トークンを keychain (または XDG file) に保存 |
 | `list_templates` | ワークスペース内のデザイン一覧を取得 |
 | `get_design_parameters` | デザインに必要なパラメータ構造を取得 |
 | `generate_pdf_sync` | PDF を同期生成してローカルパスを返す |
@@ -17,29 +18,33 @@ ReportFlow の PDF 帳票生成機能を Claude や AI エージェントから�
 
 ---
 
+## 認証方式
+
+OAuth2 **authorization_code + PKCE (S256)** フロー。Confidential client (client_secret 必要)。
+
+- ユーザーは ReportFlow Web で **OAuth クライアント** を発行 → 各ユーザー・各ワークスペースごとに異なるクライアント
+- MCP は `authenticate` ツール起動でブラウザを開き、ログイン → ワークスペース選択 → consent → JWT 取得 → ローカル保存
+- 取得 JWT は OS の **Keychain** (macOS Keychain / Windows Credential Manager / Linux libsecret) に優先保存。失敗時は XDG file (chmod 0600) にフォールバック
+- access_token 失効時は refresh_token で自動更新
+
+---
+
 ## セットアップ
 
-### Claude Desktop
+### 1. ReportFlow Web で OAuth クライアントを発行
 
-`~/Library/Application Support/Claude/claude_desktop_config.json` に以下を追加します。
+1. ReportFlow にログイン → 対象ワークスペースを選択
+2. 設定 → OAuth クライアント → 新規作成
+3. 以下を設定:
+   - **Name**: `MCP Client (任意の識別名)`
+   - **Redirect URIs**: `http://localhost:53682/callback` (CALLBACK_PORT を変える場合は対応する値)
+   - **Allowed Scopes**: `openid profile designs:read designs:write templates:read templates:write pdf:generate`
+   - **Public/Confidential**: **Confidential** (client_secret あり)
+4. 発行された `client_id` と `client_secret` をコピー (secret は再表示できないので注意)
 
-```json
-{
-  "mcpServers": {
-    "reportflow": {
-      "command": "npx",
-      "args": ["-y", "@reportflow/mcp-server"],
-      "env": {
-        "REPORTFLOW_APP_KEY": "your-app-key"
-      }
-    }
-  }
-}
-```
+### 2. Claude Code (`.mcp.json`)
 
-### Claude Code
-
-プロジェクトの `.mcp.json` に以下を追加します。
+プロジェクトの `.mcp.json` に以下を追加:
 
 ```json
 {
@@ -48,12 +53,32 @@ ReportFlow の PDF 帳票生成機能を Claude や AI エージェントから�
       "command": "npx",
       "args": ["-y", "@reportflow/mcp-server"],
       "env": {
-        "REPORTFLOW_APP_KEY": "your-app-key"
+        "REPORTFLOW_API_BASE_URL": "https://api.re-port-flow.com",
+        "REPORTFLOW_AUTH_URL": "https://re-port-flow.com/api/v1",
+        "REPORTFLOW_CLIENT_ID": "<発行された値>",
+        "REPORTFLOW_CLIENT_SECRET": "<発行された値>"
       }
     }
   }
 }
 ```
+
+> ⚠️ `.mcp.json` は git で追跡されないよう `.gitignore` に追加してください (`client_secret` を含むため)。
+
+### 3. Claude Desktop
+
+`~/Library/Application Support/Claude/claude_desktop_config.json` も同形式。
+
+### 4. 初回認証
+
+Claude Code をリロード後、Claude に依頼:
+
+```
+ReportFlow で認証して
+```
+
+Claude が `authenticate` ツールを呼び、ブラウザが起動します。ログイン → ワークスペース選択 → 同意 で完了。
+以後はトークンが期限切れになるまで他のツール (list_templates 等) を使えます。期限切れは自動 refresh、refresh も失敗したら `authenticate` を再実行してください。
 
 ---
 
@@ -61,14 +86,14 @@ ReportFlow の PDF 帳票生成機能を Claude や AI エージェントから�
 
 | 変数名 | 必須 | デフォルト | 説明 |
 |--------|------|-----------|------|
-| `REPORTFLOW_API_BASE_URL` | 任意 | `https://api.re-port-flow.com` | ReportFlow Content Service の URL |
-| `REPORTFLOW_APP_KEY` | appkey モード時必須 | — | ReportFlow の App Key |
-| `REPORTFLOW_AUTH_MODE` | 任意 | `appkey` | 認証モード: `appkey` または `oauth2` |
-| `REPORTFLOW_AUTH_URL` | oauth2 モード時任意 | `http://localhost:3000` | OAuth2 トークン発行エンドポイントのベース URL |
-| `REPORTFLOW_CLIENT_ID` | oauth2 モード時必須 | — | OAuth2 client_id |
-| `REPORTFLOW_CLIENT_SECRET` | oauth2 モード時必須 | — | OAuth2 client_secret |
-
-通常は `REPORTFLOW_APP_KEY` のみ設定してください。
+| `REPORTFLOW_API_BASE_URL` | ◯ | — | ReportFlow Content Service の URL (例: `https://api.re-port-flow.com`) |
+| `REPORTFLOW_AUTH_URL` | ◯ | — | reposts-api OAuth2 ベース URL (例: `https://re-port-flow.com/api/v1`) |
+| `REPORTFLOW_CLIENT_ID` | ◯ | — | OAuth2 Confidential client_id |
+| `REPORTFLOW_CLIENT_SECRET` | ◯ | — | OAuth2 Confidential client_secret |
+| `REPORTFLOW_CALLBACK_PORT` | 任意 | `53682` | ローカルコールバックサーバーのポート (redirect_uri と一致必須) |
+| `REPORTFLOW_SCOPE` | 任意 | `openid profile designs:read designs:write templates:read templates:write pdf:generate` | 要求スコープ (空白区切り) |
+| `REPORTFLOW_TOKEN_STORE` | 任意 | 自動 (keychain → file) | `keychain` / `file` 強制指定 |
+| `REPORTFLOW_TOKEN_STORE_PATH` | 任意 | `$XDG_STATE_HOME/reportflow-mcp` | file モード時の保存ディレクトリ |
 
 ---
 
@@ -77,6 +102,7 @@ ReportFlow の PDF 帳票生成機能を Claude や AI エージェントから�
 ### 1. テンプレート選択 → パラメータ確認 → PDF 生成（同期）
 
 ```
+0. authenticate            → 初回のみ。ブラウザでログイン・workspace 選択
 1. list_templates          → designId 一覧を確認
 2. get_design_parameters   → designId でパラメータ構造を確認
 3. generate_pdf_sync       → パラメータを埋めて PDF を即時生成
@@ -94,6 +120,7 @@ ReportFlow の PDF 帳票生成機能を Claude や AI エージェントから�
 ### 2. 非同期生成（大量ファイル向け）
 
 ```
+0. authenticate            → 初回のみ
 1. list_templates          → designId 一覧を確認
 2. get_design_parameters   → パラメータ構造を確認
 3. generate_pdfs_async     → 複数件を非同期生成
@@ -113,6 +140,7 @@ ReportFlow MCP サーバーを使うプロジェクトの `CLAUDE.md` に以下�
 
 | ツール | 用途 |
 |--------|------|
+| `authenticate` | 初回認証 / 再認証 (他のツールが認証エラーを出したら最初に呼ぶ) |
 | `list_templates` | デザイン一覧取得（designId の確認に使う） |
 | `get_design_parameters` | 指定デザインの必要パラメータ構造を取得 |
 | `generate_pdf_sync` | 単一 PDF を即時生成 → ローカルパスを返す |
@@ -124,12 +152,14 @@ ReportFlow MCP サーバーを使うプロジェクトの `CLAUDE.md` に以下�
 
 ### 帳票生成の流れ
 
-1. `list_templates` でデザイン一覧を取得し、目的の `id`（designId）を確認
-2. `get_design_parameters` で `designId` と `version`（latestVersion）を指定してパラメータ構造を確認
-3. パラメータを埋めて `generate_pdf_sync` で PDF を生成
+1. (初回のみ) `authenticate` でブラウザログイン・ワークスペース選択
+2. `list_templates` でデザイン一覧を取得し、目的の `id`（designId）を確認
+3. `get_design_parameters` で `designId` と `version`（latestVersion）を指定してパラメータ構造を確認
+4. パラメータを埋めて `generate_pdf_sync` で PDF を生成
 
 ### 注意事項
 
+- 認証エラー (`再認証が必要です` を含むメッセージ) が出たら、まず `authenticate` を呼ぶこと
 - `params` の型は `get_design_parameters` の結果に従うこと
   - `"string"` → 文字列、`"number"` → 数値、`"date"` → "YYYY-MM-DD" 形式
   - 配列型（`[{...}]`）はオブジェクトの配列を渡す
@@ -142,7 +172,19 @@ ReportFlow MCP サーバーを使うプロジェクトの `CLAUDE.md` に以下�
 ## 開発
 
 ```bash
-npm test      # ユニットテスト実行
-npm run build # TypeScript ビルド
-npm run lint  # ESLint チェック
+yarn install
+yarn test       # ユニットテスト実行
+yarn build      # TypeScript ビルド
+yarn lint       # ESLint チェック
 ```
+
+### 認証フロー (内部実装)
+
+1. `authenticate` ツール起動 → PKCE `code_verifier` / `code_challenge` を生成
+2. ローカルコールバックサーバーを `localhost:CALLBACK_PORT` で起動
+3. ブラウザで `<AUTH_URL>/oauth/authorize?response_type=code&client_id=...&redirect_uri=...&code_challenge=...&code_challenge_method=S256&state=...` を開く
+4. ユーザーがログイン → ワークスペース選択 → 同意 → callback に code 飛ぶ
+5. `<AUTH_URL>/oauth/token` (POST, `grant_type=authorization_code`) で code + code_verifier + client_secret を送り JWT 取得
+6. JWT を keychain (or XDG file) に保存。`account = client_id`、`service = reportflow-mcp`
+7. 以後の API 呼び出しは `Authorization: Bearer <jwt>` ヘッダ
+8. `expires_in` 経過時は refresh_token で自動更新

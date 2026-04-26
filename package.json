@@ -24,6 +24,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
+    "@napi-rs/keyring": "^1.2.0",
+    "open": "^8.4.2",
     "zod": "^3.25.51"
   },
   "devDependencies": {

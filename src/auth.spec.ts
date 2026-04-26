@@ -1,162 +1,245 @@
-import { getAuthHeaders, invalidateToken, requestWithAuth } from './auth';
-import { HttpError } from './http';
+import { TokenSet } from './token-store/types.js';
+
+const mockStore = {
+  kind: 'file' as const,
+  load: jest.fn<Promise<TokenSet | null>, [string]>(),
+  save: jest.fn<Promise<void>, [string, TokenSet]>(),
+  clear: jest.fn<Promise<void>, [string]>(),
+};
+const mockStartCallbackServer = jest.fn<Promise<{ code: string }>, [unknown]>();
+const mockOpen = jest.fn<Promise<unknown>, [string]>();
+
+jest.mock('./token-store/index.js', () => ({
+  createTokenStore: () => mockStore,
+}));
+jest.mock('./auth-server.js', () => ({
+  startCallbackServer: (opts: unknown) => mockStartCallbackServer(opts),
+}));
+jest.mock('open', () => ({
+  __esModule: true,
+  default: (url: string) => mockOpen(url),
+}));
+
+import {
+  AuthRequiredError,
+  authorize,
+  getAuthHeaders,
+  requestWithAuth,
+  clearAuth,
+} from './auth.js';
+import { HttpError } from './http.js';
 
 const mockFetch = jest.fn();
-global.fetch = mockFetch;
+global.fetch = mockFetch as unknown as typeof fetch;
 
-function mockTokenResponse(token: string, expiresIn = 3600) {
-  mockFetch.mockResolvedValueOnce({
+const ENV_KEYS = [
+  'REPORTFLOW_AUTH_URL',
+  'REPORTFLOW_API_BASE_URL',
+  'REPORTFLOW_CLIENT_ID',
+  'REPORTFLOW_CLIENT_SECRET',
+  'REPORTFLOW_CALLBACK_PORT',
+  'REPORTFLOW_SCOPE',
+  'REPORTFLOW_AUTH_MODE',
+  'REPORTFLOW_APP_KEY',
+] as const;
+
+const baseTokens = (override: Partial<TokenSet> = {}): TokenSet => ({
+  accessToken: 'jwt.placeholder.signature',
+  refreshToken: 'refresh-1',
+  expiresAt: Date.now() + 3600_000,
+  scope: 'openid',
+  workspaceId: '00000000-0000-0000-0000-000000000000',
+  ...override,
+});
+
+const tokenJsonResponse = (
+  token: string,
+  expiresIn = 3600,
+  refresh = 'r-new',
+): Response =>
+  ({
     ok: true,
     status: 200,
     statusText: 'OK',
-    json: () => Promise.resolve({ access_token: token, expires_in: expiresIn }),
-    arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)),
-  });
-}
-
-const MANAGED_ENV_KEYS = [
-  'REPORTFLOW_AUTH_MODE',
-  'REPORTFLOW_APP_KEY',
-  'REPORTFLOW_CLIENT_ID',
-  'REPORTFLOW_CLIENT_SECRET',
-  'REPORTFLOW_AUTH_URL',
-] as const;
+    json: () =>
+      Promise.resolve({
+        access_token: token,
+        refresh_token: refresh,
+        expires_in: expiresIn,
+        scope: 'openid',
+      }),
+  }) as unknown as Response;
 
 beforeEach(() => {
-  global.fetch = mockFetch;
   jest.clearAllMocks();
-  invalidateToken();
-  MANAGED_ENV_KEYS.forEach((key) => delete process.env[key]);
+  ENV_KEYS.forEach((k) => delete process.env[k]);
+  process.env['REPORTFLOW_AUTH_URL'] = 'https://example.test/api/v1';
+  process.env['REPORTFLOW_CLIENT_ID'] = 'cid';
+  process.env['REPORTFLOW_CLIENT_SECRET'] = 'csecret';
+  mockStore.load.mockReset();
+  mockStore.save.mockReset();
+  mockStore.clear.mockReset();
+  mockStore.save.mockResolvedValue(undefined);
+  mockStore.clear.mockResolvedValue(undefined);
 });
 
-describe('getAuthHeaders — appkey mode', () => {
-  beforeEach(() => {
-    process.env['REPORTFLOW_AUTH_MODE'] = 'appkey';
-  });
-
-  it('REPORTFLOW_APP_KEY を appkey ヘッダとして返す', async () => {
-    process.env['REPORTFLOW_APP_KEY'] = 'my-app-key';
+describe('getAuthHeaders', () => {
+  it('returns Bearer header when token is fresh', async () => {
+    mockStore.load.mockResolvedValueOnce(baseTokens());
     const headers = await getAuthHeaders();
-    expect(headers).toEqual({ appkey: 'my-app-key' });
+    expect(headers).toEqual({
+      Authorization: 'Bearer jwt.placeholder.signature',
+    });
+    expect(mockStore.save).not.toHaveBeenCalled();
   });
 
-  it('REPORTFLOW_APP_KEY 未設定時にエラーを投げる', async () => {
-    delete process.env['REPORTFLOW_APP_KEY'];
-    await expect(getAuthHeaders()).rejects.toThrow('REPORTFLOW_APP_KEY must be set');
-  });
-});
-
-describe('getAuthHeaders — oauth2 mode', () => {
-  beforeEach(() => {
-    process.env['REPORTFLOW_AUTH_MODE'] = 'oauth2';
-    process.env['REPORTFLOW_CLIENT_ID'] = 'client-id';
-    process.env['REPORTFLOW_CLIENT_SECRET'] = 'client-secret';
-    process.env['REPORTFLOW_AUTH_URL'] = 'http://localhost:3000';
+  it('throws AuthRequiredError when no token saved', async () => {
+    mockStore.load.mockResolvedValueOnce(null);
+    await expect(getAuthHeaders()).rejects.toBeInstanceOf(AuthRequiredError);
   });
 
-  it('トークンを取得して Bearer ヘッダを返す', async () => {
-    mockTokenResponse('access-token-123');
-    const headers = await getAuthHeaders();
-    expect(headers).toEqual({ Authorization: 'Bearer access-token-123' });
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    expect(mockFetch.mock.calls[0][0]).toContain('/v1/oauth/token');
-  });
-
-  it('2回目はキャッシュを使い fetch を呼ばない', async () => {
-    mockTokenResponse('cached-token');
-    await getAuthHeaders();
-    const headers = await getAuthHeaders();
-    expect(headers).toEqual({ Authorization: 'Bearer cached-token' });
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-  });
-
-  it('キャッシュ期限切れ時に再取得する', async () => {
-    // expires_in=0 → expiresAt = now - TOKEN_EXPIRY_BUFFER_MS (過去) → 即失効
-    mockTokenResponse('old-token', 0);
-    await getAuthHeaders();
-
-    mockTokenResponse('new-token');
-    const headers = await getAuthHeaders();
-    expect(headers).toEqual({ Authorization: 'Bearer new-token' });
-    expect(mockFetch).toHaveBeenCalledTimes(2);
-  });
-
-  it('並列呼び出し時に fetch は1回のみ実行される (inflight lock)', async () => {
-    let resolveToken!: (v: unknown) => void;
-    const delayedFetch = jest.fn().mockReturnValueOnce(
-      new Promise((resolve) => {
-        resolveToken = resolve;
-      }),
+  it('refreshes when expiresAt is past, then returns new bearer', async () => {
+    mockStore.load.mockResolvedValueOnce(
+      baseTokens({ expiresAt: Date.now() - 1, refreshToken: 'r-old' }),
     );
-    global.fetch = delayedFetch;
-
-    try {
-      const [p1, p2] = [getAuthHeaders(), getAuthHeaders()];
-
-      resolveToken({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        json: () => Promise.resolve({ access_token: 'shared-token', expires_in: 3600 }),
-        arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)),
-      });
-
-      const [h1, h2] = await Promise.all([p1, p2]);
-      expect(h1).toEqual({ Authorization: 'Bearer shared-token' });
-      expect(h2).toEqual({ Authorization: 'Bearer shared-token' });
-      expect(delayedFetch).toHaveBeenCalledTimes(1);
-    } finally {
-      global.fetch = mockFetch;
-    }
+    mockFetch.mockResolvedValueOnce(
+      tokenJsonResponse('new-jwt', 3600, 'r-new'),
+    );
+    const headers = await getAuthHeaders();
+    expect(headers).toEqual({ Authorization: 'Bearer new-jwt' });
+    expect(mockStore.save).toHaveBeenCalledTimes(1);
+    const [, savedTokens] = mockStore.save.mock.calls[0];
+    expect(savedTokens.accessToken).toEqual('new-jwt');
+    expect(savedTokens.refreshToken).toEqual('r-new');
   });
 
-  it('REPORTFLOW_CLIENT_ID 未設定時にエラーを投げる', async () => {
-    delete process.env['REPORTFLOW_CLIENT_ID'];
-    await expect(getAuthHeaders()).rejects.toThrow(
-      'REPORTFLOW_CLIENT_ID and REPORTFLOW_CLIENT_SECRET must be set',
+  it('throws AuthRequiredError when refresh fails', async () => {
+    mockStore.load.mockResolvedValueOnce(
+      baseTokens({ expiresAt: Date.now() - 1 }),
     );
-  });
-
-  it('REPORTFLOW_CLIENT_SECRET 未設定時にエラーを投げる', async () => {
-    delete process.env['REPORTFLOW_CLIENT_SECRET'];
-    await expect(getAuthHeaders()).rejects.toThrow(
-      'REPORTFLOW_CLIENT_ID and REPORTFLOW_CLIENT_SECRET must be set',
-    );
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      statusText: 'Bad Request',
+      json: () => Promise.resolve({ error: 'invalid_grant' }),
+    } as unknown as Response);
+    await expect(getAuthHeaders()).rejects.toBeInstanceOf(AuthRequiredError);
   });
 });
 
 describe('requestWithAuth', () => {
-  beforeEach(() => {
-    process.env['REPORTFLOW_AUTH_MODE'] = 'appkey';
-    process.env['REPORTFLOW_APP_KEY'] = 'my-app-key';
+  it('runs fn with auth headers', async () => {
+    mockStore.load.mockResolvedValueOnce(baseTokens());
+    const fn = jest.fn().mockResolvedValue('ok');
+    const result = await requestWithAuth(fn);
+    expect(result).toEqual('ok');
+    expect(fn).toHaveBeenCalledWith({
+      Authorization: 'Bearer jwt.placeholder.signature',
+    });
   });
 
-  it('fn を auth ヘッダ付きで呼び出し結果を返す', async () => {
-    const fn = jest.fn().mockResolvedValue('result');
+  it('on 401, refreshes via refresh_token and retries fn once', async () => {
+    mockStore.load
+      .mockResolvedValueOnce(baseTokens({ accessToken: 'old' }))
+      .mockResolvedValueOnce(baseTokens({ accessToken: 'old' }));
+    mockFetch.mockResolvedValueOnce(tokenJsonResponse('refreshed', 3600));
+    const fn = jest
+      .fn()
+      .mockRejectedValueOnce(new HttpError(401, 'Unauthorized'))
+      .mockResolvedValueOnce('after-refresh');
     const result = await requestWithAuth(fn);
-    expect(result).toBe('result');
-    expect(fn).toHaveBeenCalledWith({ appkey: 'my-app-key' });
-  });
-
-  it('401 エラー時にキャッシュを無効化して1回だけリトライする', async () => {
-    const fn = jest.fn()
-      .mockRejectedValueOnce(new HttpError(401, '[401] Unauthorized'))
-      .mockResolvedValueOnce('retry-result');
-
-    const result = await requestWithAuth(fn);
-    expect(result).toBe('retry-result');
+    expect(result).toEqual('after-refresh');
     expect(fn).toHaveBeenCalledTimes(2);
+    expect(fn.mock.calls[1][0]).toEqual({
+      Authorization: 'Bearer refreshed',
+    });
   });
 
-  it('401 以外の HttpError はリトライせず再スローする', async () => {
-    const fn = jest.fn().mockRejectedValue(new HttpError(500, '[500] Server Error'));
-    await expect(requestWithAuth(fn)).rejects.toThrow('[500] Server Error');
-    expect(fn).toHaveBeenCalledTimes(1);
+  it('throws AuthRequiredError when 401 and refresh also fails', async () => {
+    mockStore.load
+      .mockResolvedValueOnce(baseTokens())
+      .mockResolvedValueOnce(baseTokens());
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      statusText: 'Bad Request',
+      json: () => Promise.resolve({ error: 'invalid_grant' }),
+    } as unknown as Response);
+    const fn = jest.fn().mockRejectedValue(new HttpError(401, 'Unauthorized'));
+    await expect(requestWithAuth(fn)).rejects.toBeInstanceOf(AuthRequiredError);
   });
 
-  it('HttpError 以外のエラーはリトライせず再スローする', async () => {
-    const fn = jest.fn().mockRejectedValue(new Error('Network error'));
-    await expect(requestWithAuth(fn)).rejects.toThrow('Network error');
+  it('non-401 HttpError is rethrown without retry', async () => {
+    mockStore.load.mockResolvedValueOnce(baseTokens());
+    const fn = jest.fn().mockRejectedValue(new HttpError(500, 'Boom'));
+    await expect(requestWithAuth(fn)).rejects.toThrow('Boom');
     expect(fn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('authorize (PKCE flow)', () => {
+  it('runs full PKCE flow and saves tokens', async () => {
+    mockStartCallbackServer.mockResolvedValueOnce({ code: 'authcode' });
+    mockOpen.mockResolvedValueOnce(undefined);
+    mockFetch.mockResolvedValueOnce(tokenJsonResponse('newjwt', 3600, 'rt'));
+    const result = await authorize();
+    expect(mockOpen).toHaveBeenCalledTimes(1);
+    const url = mockOpen.mock.calls[0][0];
+    expect(url).toContain('https://example.test/api/v1/oauth/authorize');
+    expect(url).toContain('response_type=code');
+    expect(url).toContain('code_challenge_method=S256');
+    expect(url).toContain('client_id=cid');
+    expect(mockStore.save).toHaveBeenCalledTimes(1);
+    const [account, tokens] = mockStore.save.mock.calls[0];
+    expect(account).toEqual('cid');
+    expect(tokens.accessToken).toEqual('newjwt');
+    expect(result.expiresAt).toBeGreaterThan(Date.now());
+  });
+
+  it('clears existing token when force=true', async () => {
+    mockStartCallbackServer.mockResolvedValueOnce({ code: 'c' });
+    mockOpen.mockResolvedValueOnce(undefined);
+    mockFetch.mockResolvedValueOnce(tokenJsonResponse('t'));
+    await authorize({ force: true });
+    expect(mockStore.clear).toHaveBeenCalledWith('cid');
+  });
+
+  it('uses default callback port 53682 when REPORTFLOW_CALLBACK_PORT unset', async () => {
+    mockStartCallbackServer.mockResolvedValueOnce({ code: 'c' });
+    mockOpen.mockResolvedValueOnce(undefined);
+    mockFetch.mockResolvedValueOnce(tokenJsonResponse('t'));
+    await authorize();
+    const startOpts = mockStartCallbackServer.mock.calls[0][0] as {
+      port: number;
+    };
+    expect(startOpts.port).toEqual(53682);
+  });
+});
+
+describe('clearAuth', () => {
+  it('clears the token store entry for current client_id', async () => {
+    await clearAuth();
+    expect(mockStore.clear).toHaveBeenCalledWith('cid');
+  });
+});
+
+describe('config validation', () => {
+  it('throws when REPORTFLOW_AUTH_URL is missing', async () => {
+    delete process.env['REPORTFLOW_AUTH_URL'];
+    await expect(getAuthHeaders()).rejects.toThrow(
+      'REPORTFLOW_AUTH_URL is required',
+    );
+  });
+  it('throws when REPORTFLOW_CLIENT_ID is missing', async () => {
+    delete process.env['REPORTFLOW_CLIENT_ID'];
+    await expect(getAuthHeaders()).rejects.toThrow(
+      'REPORTFLOW_CLIENT_ID is required',
+    );
+  });
+  it('throws when REPORTFLOW_CLIENT_SECRET is missing', async () => {
+    delete process.env['REPORTFLOW_CLIENT_SECRET'];
+    await expect(getAuthHeaders()).rejects.toThrow(
+      'REPORTFLOW_CLIENT_SECRET is required',
+    );
   });
 });
