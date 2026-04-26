@@ -9,6 +9,9 @@ import {
 import { createTokenStore, TokenSet } from './token-store/index.js';
 
 const DEFAULT_AUTH_URL = 'https://re-port-flow.com/api/v1';
+// 公式 ReportFlow MCP の OAuth client_id (reposts-api PRJ-3-300 で seed 済み)。
+// 環境変数 REPORTFLOW_CLIENT_ID で上書き可能。
+const DEFAULT_CLIENT_ID = 'reportflow-mcp';
 const DEFAULT_SCOPE =
   'openid profile designs:read designs:write templates:read templates:write pdf:generate';
 const DEFAULT_CALLBACK_PORT = 53682;
@@ -17,11 +20,6 @@ const TOKEN_EXPIRY_BUFFER_MS = 60_000;
 type OAuthConfig = {
   authBase: string;
   clientId: string;
-  /**
-   * Confidential client (PKCE + client_secret) を使う場合のみ設定。
-   * Public client (PKCE のみ) では省略する。OSS 配布用途では Public 推奨。
-   */
-  clientSecret?: string;
   callbackPort: number;
   scope: string;
 };
@@ -53,10 +51,7 @@ const ensureTrailingSlash = (s: string): string =>
 
 const getOAuthConfig = (): OAuthConfig => {
   const authUrl = process.env['REPORTFLOW_AUTH_URL'] ?? DEFAULT_AUTH_URL;
-  const clientId = process.env['REPORTFLOW_CLIENT_ID'];
-  const clientSecret = process.env['REPORTFLOW_CLIENT_SECRET'];
-  if (!clientId) throw new Error('REPORTFLOW_CLIENT_ID is required');
-  // CLIENT_SECRET は Public client では不要。設定されていれば Confidential として扱う。
+  const clientId = process.env['REPORTFLOW_CLIENT_ID'] ?? DEFAULT_CLIENT_ID;
 
   const portStr = process.env['REPORTFLOW_CALLBACK_PORT'];
   const callbackPort = portStr ? parseInt(portStr, 10) : DEFAULT_CALLBACK_PORT;
@@ -69,7 +64,6 @@ const getOAuthConfig = (): OAuthConfig => {
   return {
     authBase: ensureTrailingSlash(authUrl),
     clientId,
-    clientSecret,
     callbackPort,
     scope: process.env['REPORTFLOW_SCOPE'] ?? DEFAULT_SCOPE,
   };
@@ -119,16 +113,11 @@ const buildAuthorizeUrl = (
 const buildTokenRequestBody = (
   config: OAuthConfig,
   payload: Record<string, string>,
-): string => {
-  const body: Record<string, string> = {
+): string =>
+  JSON.stringify({
     ...payload,
     client_id: config.clientId,
-  };
-  if (config.clientSecret) {
-    body['client_secret'] = config.clientSecret;
-  }
-  return JSON.stringify(body);
-};
+  });
 
 const exchangeCode = async (
   config: OAuthConfig,

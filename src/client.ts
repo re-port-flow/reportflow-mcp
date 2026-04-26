@@ -75,16 +75,18 @@ export const generatePdfSync = async (body: {
   designId: string;
   version: number;
   content: ContentDto;
+  outputDir?: string;
 }): Promise<string> => {
   const url = new URL('/v1/file/sync/single', getBaseUrl());
+  const { outputDir, ...payload } = body;
   const data = await requestWithAuth((headers) =>
     fetchBinary(url.toString(), {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify(payload),
     }),
   );
-  return saveTempFile(data, body.content.fileName);
+  return saveTempFile(data, body.content.fileName, outputDir);
 };
 
 export const generatePdfAsync = async (body: {
@@ -106,16 +108,19 @@ export const generatePdfsSync = async (body: {
   designId: string;
   version: number;
   contents: ContentDto[];
+  outputDir?: string;
+  zipFileName?: string;
 }): Promise<string> => {
   const url = new URL('/v1/file/sync/multiple', getBaseUrl());
+  const { outputDir, zipFileName, ...payload } = body;
   const data = await requestWithAuth((headers) =>
     fetchBinary(url.toString(), {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify(payload),
     }),
   );
-  return saveTempFile(data, 'download.zip');
+  return saveTempFile(data, zipFileName ?? 'download.zip', outputDir);
 };
 
 export const generatePdfsAsync = async (body: {
@@ -137,23 +142,25 @@ export const downloadFile = async (
   requestId: string,
   fileId: string,
   fileName?: string,
+  outputDir?: string,
 ): Promise<string> => {
   const url = new URL(`/v1/file/download/${requestId}/${fileId}`, getBaseUrl());
   const data = await requestWithAuth((headers) =>
     fetchBinary(url.toString(), { headers }),
   );
-  return saveTempFile(data, fileName ?? `${fileId}.pdf`);
+  return saveTempFile(data, fileName ?? `${fileId}.pdf`, outputDir);
 };
 
 export const downloadZip = async (
   requestId: string,
   fileName?: string,
+  outputDir?: string,
 ): Promise<string> => {
   const url = new URL(`/v1/file/download/${requestId}`, getBaseUrl());
   const data = await requestWithAuth((headers) =>
     fetchBinary(url.toString(), { headers }),
   );
-  return saveTempFile(data, fileName ?? `${requestId}.zip`);
+  return saveTempFile(data, fileName ?? `${requestId}.zip`, outputDir);
 };
 
 export const listDesigns = async (): Promise<DesignListResponse> => {

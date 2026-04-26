@@ -36,7 +36,6 @@ const ENV_KEYS = [
   'REPORTFLOW_AUTH_URL',
   'REPORTFLOW_API_BASE_URL',
   'REPORTFLOW_CLIENT_ID',
-  'REPORTFLOW_CLIENT_SECRET',
   'REPORTFLOW_CALLBACK_PORT',
   'REPORTFLOW_SCOPE',
 ] as const;
@@ -73,7 +72,6 @@ beforeEach(() => {
   ENV_KEYS.forEach((k) => delete process.env[k]);
   process.env['REPORTFLOW_AUTH_URL'] = 'https://example.test/api/v1';
   process.env['REPORTFLOW_CLIENT_ID'] = 'cid';
-  // CLIENT_SECRET は Public client では未設定。Confidential テストでは個別に設定する。
   mockStore.load.mockReset();
   mockStore.save.mockReset();
   mockStore.clear.mockReset();
@@ -231,14 +229,16 @@ describe('config validation', () => {
     const url = mockOpen.mock.calls[0][0];
     expect(url).toContain('https://re-port-flow.com/api/v1/oauth/authorize');
   });
-  it('throws when REPORTFLOW_CLIENT_ID is missing', async () => {
+  it('falls back to DEFAULT_CLIENT_ID when REPORTFLOW_CLIENT_ID is unset', async () => {
     delete process.env['REPORTFLOW_CLIENT_ID'];
-    await expect(getAuthHeaders()).rejects.toThrow(
-      'REPORTFLOW_CLIENT_ID is required',
-    );
+    mockStartCallbackServer.mockResolvedValueOnce({ code: 'c' });
+    mockOpen.mockResolvedValueOnce(undefined);
+    mockFetch.mockResolvedValueOnce(tokenJsonResponse('t'));
+    await authorize();
+    const url = mockOpen.mock.calls[0][0];
+    expect(url).toContain('client_id=reportflow-mcp');
   });
-  it('Public client (no CLIENT_SECRET): omits client_secret from token request body', async () => {
-    delete process.env['REPORTFLOW_CLIENT_SECRET'];
+  it('never sends client_secret in token request body (Public client only)', async () => {
     mockStartCallbackServer.mockResolvedValueOnce({ code: 'c' });
     mockOpen.mockResolvedValueOnce(undefined);
     mockFetch.mockResolvedValueOnce(tokenJsonResponse('t'));
@@ -249,15 +249,5 @@ describe('config validation', () => {
     expect(body['client_id']).toEqual('cid');
     expect(body['client_secret']).toBeUndefined();
     expect(body['code_verifier']).toBeDefined();
-  });
-  it('Confidential client (CLIENT_SECRET set): includes client_secret in token request body', async () => {
-    process.env['REPORTFLOW_CLIENT_SECRET'] = 'csecret';
-    mockStartCallbackServer.mockResolvedValueOnce({ code: 'c' });
-    mockOpen.mockResolvedValueOnce(undefined);
-    mockFetch.mockResolvedValueOnce(tokenJsonResponse('t'));
-    await authorize();
-    const init = mockFetch.mock.calls[0][1] as { body: string };
-    const body = JSON.parse(init.body) as Record<string, unknown>;
-    expect(body['client_secret']).toEqual('csecret');
   });
 });

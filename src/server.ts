@@ -49,6 +49,13 @@ const contentDtoSchema = z.object({
     .describe('PDFに埋め込むパラメータ（get_design_parametersで構造を確認）'),
 });
 
+const outputDirSchema = z
+  .string()
+  .optional()
+  .describe(
+    '出力先ディレクトリ (相対/絶対)。未指定時は現在の作業ディレクトリに保存。ユーザーが場所を指定した場合のみセットすること。',
+  );
+
 const singlePdfSchema = {
   designId: designIdSchema,
   version: versionSchema,
@@ -62,6 +69,20 @@ const multiplePdfSchema = {
     .array(contentDtoSchema)
     .min(1)
     .describe('PDF生成コンテンツの配列（複数ファイル）'),
+};
+
+const singlePdfSyncSchema = {
+  ...singlePdfSchema,
+  outputDir: outputDirSchema,
+};
+
+const multiplePdfSyncSchema = {
+  ...multiplePdfSchema,
+  outputDir: outputDirSchema,
+  zipFileName: z
+    .string()
+    .optional()
+    .describe('出力 ZIP のファイル名 (省略時は download.zip)'),
 };
 
 export const startServer = async (): Promise<void> => {
@@ -108,7 +129,7 @@ export const startServer = async (): Promise<void> => {
   server.tool(
     generatePdfSyncTool.name,
     generatePdfSyncTool.description,
-    singlePdfSchema,
+    singlePdfSyncSchema,
     async (input) => handleGeneratePdfSync(input),
   );
 
@@ -124,7 +145,7 @@ export const startServer = async (): Promise<void> => {
   server.tool(
     generatePdfsSyncTool.name,
     generatePdfsSyncTool.description,
-    multiplePdfSchema,
+    multiplePdfSyncSchema,
     async (input) => handleGeneratePdfsSync(input),
   );
 
@@ -149,6 +170,7 @@ export const startServer = async (): Promise<void> => {
         .string()
         .optional()
         .describe('保存ファイル名（省略時はfileId.pdf）'),
+      outputDir: outputDirSchema,
     },
     async (input) => handleDownloadFile(input),
   );
@@ -165,6 +187,7 @@ export const startServer = async (): Promise<void> => {
         .string()
         .optional()
         .describe('保存ファイル名（省略時はrequestId.zip）'),
+      outputDir: outputDirSchema,
     },
     async (input) => handleDownloadZip(input),
   );

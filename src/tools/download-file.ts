@@ -3,13 +3,14 @@ import { downloadFile } from '../client.js';
 export const downloadFileTool = {
   name: 'download_file',
   description:
-    'generate_pdf_asyncで生成した単一PDFファイルをダウンロードします。requestIdとfileIdを指定し、ローカルファイルパスを返します。',
+    'generate_pdf_asyncで生成した単一PDFファイルをダウンロードします。requestIdとfileIdを指定し、ローカルファイルパスを返します。outputDir を指定するとそのディレクトリに、未指定の場合は現在の作業ディレクトリに保存します。',
 };
 
 export type DownloadFileInput = {
   requestId: string;
   fileId: string;
   fileName?: string;
+  outputDir?: string;
 };
 
 export type DownloadFileResult = {
@@ -25,6 +26,7 @@ export const handleDownloadFile = async (
       input.requestId,
       input.fileId,
       input.fileName,
+      input.outputDir,
     );
     return {
       content: [

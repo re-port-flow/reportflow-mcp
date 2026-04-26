@@ -43,7 +43,7 @@ describe('handleDownloadFile', () => {
     const result = await handleDownloadFile({ requestId: 'req-uuid-1', fileId: 'file-uuid-1' });
 
     expect(result.isError).toBeUndefined();
-    expect(mockedFileHelper.saveTempFile).toHaveBeenCalledWith(expect.any(ArrayBuffer), 'file-uuid-1.pdf');
+    expect(mockedFileHelper.saveTempFile).toHaveBeenCalledWith(expect.any(ArrayBuffer), 'file-uuid-1.pdf', undefined);
   });
 
   it('エラー系: APIエラー時にisError=trueを返す', async () => {

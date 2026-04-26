@@ -41,7 +41,7 @@ describe('handleGeneratePdfSync', () => {
 
     expect(result.isError).toBeUndefined();
     expect(JSON.parse(result.content[0].text).filePath).toBe('/tmp/invoice.pdf');
-    expect(mockedFileHelper.saveTempFile).toHaveBeenCalledWith(expect.any(ArrayBuffer), 'invoice.pdf');
+    expect(mockedFileHelper.saveTempFile).toHaveBeenCalledWith(expect.any(ArrayBuffer), 'invoice.pdf', undefined);
   });
 
   it('エラー系: APIエラー時にisError=trueを返す', async () => {

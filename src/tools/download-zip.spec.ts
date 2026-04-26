@@ -44,7 +44,7 @@ describe('handleDownloadZip', () => {
     const result = await handleDownloadZip({ requestId: 'req-uuid-1' });
 
     expect(result.isError).toBeUndefined();
-    expect(mockedFileHelper.saveTempFile).toHaveBeenCalledWith(expect.any(ArrayBuffer), 'req-uuid-1.zip');
+    expect(mockedFileHelper.saveTempFile).toHaveBeenCalledWith(expect.any(ArrayBuffer), 'req-uuid-1.zip', undefined);
   });
 
   it('エラー系: APIエラー時にisError=trueを返す', async () => {
