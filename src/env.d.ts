@@ -1,13 +1,13 @@
 declare global {
   namespace NodeJS {
     interface ProcessEnv {
-      /** Content Service ベース URL (PDF 生成・ダウンロード等) */
+      /** [任意] Content Service ベース URL (デフォルト: https://api.re-port-flow.com、開発/staging で上書き) */
       REPORTFLOW_API_BASE_URL?: string;
-      /** reposts-api ベース URL (OAuth2 endpoint。例: https://re-port-flow.com/api/v1) */
+      /** [任意] reposts-api ベース URL (デフォルト: https://re-port-flow.com/api/v1、開発/staging で上書き) */
       REPORTFLOW_AUTH_URL?: string;
-      /** OAuth2 Confidential client の client_id */
+      /** [必須] OAuth2 Confidential client の client_id (ReportFlow Web で発行) */
       REPORTFLOW_CLIENT_ID?: string;
-      /** OAuth2 Confidential client の client_secret */
+      /** [必須] OAuth2 Confidential client の client_secret (ReportFlow Web で発行) */
       REPORTFLOW_CLIENT_SECRET?: string;
       /** ローカルコールバックサーバーのポート番号 (デフォルト 53682) */
       REPORTFLOW_CALLBACK_PORT?: string;

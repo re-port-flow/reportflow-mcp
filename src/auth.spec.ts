@@ -39,8 +39,6 @@ const ENV_KEYS = [
   'REPORTFLOW_CLIENT_SECRET',
   'REPORTFLOW_CALLBACK_PORT',
   'REPORTFLOW_SCOPE',
-  'REPORTFLOW_AUTH_MODE',
-  'REPORTFLOW_APP_KEY',
 ] as const;
 
 const baseTokens = (override: Partial<TokenSet> = {}): TokenSet => ({
@@ -224,11 +222,14 @@ describe('clearAuth', () => {
 });
 
 describe('config validation', () => {
-  it('throws when REPORTFLOW_AUTH_URL is missing', async () => {
+  it('falls back to production AUTH_URL when REPORTFLOW_AUTH_URL is unset', async () => {
     delete process.env['REPORTFLOW_AUTH_URL'];
-    await expect(getAuthHeaders()).rejects.toThrow(
-      'REPORTFLOW_AUTH_URL is required',
-    );
+    mockStartCallbackServer.mockResolvedValueOnce({ code: 'c' });
+    mockOpen.mockResolvedValueOnce(undefined);
+    mockFetch.mockResolvedValueOnce(tokenJsonResponse('t'));
+    await authorize();
+    const url = mockOpen.mock.calls[0][0];
+    expect(url).toContain('https://re-port-flow.com/api/v1/oauth/authorize');
   });
   it('throws when REPORTFLOW_CLIENT_ID is missing', async () => {
     delete process.env['REPORTFLOW_CLIENT_ID'];

@@ -8,6 +8,7 @@ import {
 } from './pkce.js';
 import { createTokenStore, TokenSet } from './token-store/index.js';
 
+const DEFAULT_AUTH_URL = 'https://re-port-flow.com/api/v1';
 const DEFAULT_SCOPE =
   'openid profile designs:read designs:write templates:read templates:write pdf:generate';
 const DEFAULT_CALLBACK_PORT = 53682;
@@ -47,10 +48,9 @@ const ensureTrailingSlash = (s: string): string =>
   s.endsWith('/') ? s : `${s}/`;
 
 const getOAuthConfig = (): OAuthConfig => {
-  const authUrl = process.env['REPORTFLOW_AUTH_URL'];
+  const authUrl = process.env['REPORTFLOW_AUTH_URL'] ?? DEFAULT_AUTH_URL;
   const clientId = process.env['REPORTFLOW_CLIENT_ID'];
   const clientSecret = process.env['REPORTFLOW_CLIENT_SECRET'];
-  if (!authUrl) throw new Error('REPORTFLOW_AUTH_URL is required');
   if (!clientId) throw new Error('REPORTFLOW_CLIENT_ID is required');
   if (!clientSecret) throw new Error('REPORTFLOW_CLIENT_SECRET is required');
 

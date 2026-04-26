@@ -53,8 +53,6 @@ OAuth2 **authorization_code + PKCE (S256)** フロー。Confidential client (cli
       "command": "npx",
       "args": ["-y", "@reportflow/mcp-server"],
       "env": {
-        "REPORTFLOW_API_BASE_URL": "https://api.re-port-flow.com",
-        "REPORTFLOW_AUTH_URL": "https://re-port-flow.com/api/v1",
         "REPORTFLOW_CLIENT_ID": "<発行された値>",
         "REPORTFLOW_CLIENT_SECRET": "<発行された値>"
       }
@@ -62,6 +60,10 @@ OAuth2 **authorization_code + PKCE (S256)** フロー。Confidential client (cli
   }
 }
 ```
+
+本番環境への接続は組み込み済みのため、URL の指定は不要です。ステージングや
+ローカル開発で異なる URL を使う場合のみ `REPORTFLOW_AUTH_URL` /
+`REPORTFLOW_API_BASE_URL` を `env` に追加してください。
 
 > ⚠️ `.mcp.json` は git で追跡されないよう `.gitignore` に追加してください (`client_secret` を含むため)。
 
@@ -86,10 +88,10 @@ Claude が `authenticate` ツールを呼び、ブラウザが起動します。
 
 | 変数名 | 必須 | デフォルト | 説明 |
 |--------|------|-----------|------|
-| `REPORTFLOW_API_BASE_URL` | ◯ | — | ReportFlow Content Service の URL (例: `https://api.re-port-flow.com`) |
-| `REPORTFLOW_AUTH_URL` | ◯ | — | reposts-api OAuth2 ベース URL (例: `https://re-port-flow.com/api/v1`) |
-| `REPORTFLOW_CLIENT_ID` | ◯ | — | OAuth2 Confidential client_id |
-| `REPORTFLOW_CLIENT_SECRET` | ◯ | — | OAuth2 Confidential client_secret |
+| `REPORTFLOW_CLIENT_ID` | **◯** | — | OAuth2 Confidential client_id (Web で発行) |
+| `REPORTFLOW_CLIENT_SECRET` | **◯** | — | OAuth2 Confidential client_secret (Web で発行) |
+| `REPORTFLOW_API_BASE_URL` | 任意 | `https://api.re-port-flow.com` | Content Service の URL (staging/local で上書き) |
+| `REPORTFLOW_AUTH_URL` | 任意 | `https://re-port-flow.com/api/v1` | reposts-api OAuth2 ベース URL (staging/local で上書き) |
 | `REPORTFLOW_CALLBACK_PORT` | 任意 | `53682` | ローカルコールバックサーバーのポート (redirect_uri と一致必須) |
 | `REPORTFLOW_SCOPE` | 任意 | `openid profile designs:read designs:write templates:read templates:write pdf:generate` | 要求スコープ (空白区切り) |
 | `REPORTFLOW_TOKEN_STORE` | 任意 | 自動 (keychain → file) | `keychain` / `file` 強制指定 |

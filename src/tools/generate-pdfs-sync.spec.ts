@@ -3,9 +3,8 @@ import { handleGeneratePdfsSync } from './generate-pdfs-sync';
 
 jest.mock('../auth', () => ({
   requestWithAuth: jest.fn((fn: (h: Record<string, string>) => unknown) =>
-    fn({ appkey: 'test-app-key' }),
+    fn({ Authorization: 'Bearer test-token' }),
   ),
-  invalidateToken: jest.fn(),
 }));
 jest.mock('../file-helper');
 

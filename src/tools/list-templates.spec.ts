@@ -2,9 +2,8 @@ import { handleListTemplates } from './list-templates';
 
 jest.mock('../auth', () => ({
   requestWithAuth: jest.fn((fn: (h: Record<string, string>) => unknown) =>
-    fn({ appkey: 'test-app-key' }),
+    fn({ Authorization: 'Bearer test-token' }),
   ),
-  invalidateToken: jest.fn(),
 }));
 
 const mockFetch = jest.fn();
