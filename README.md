@@ -20,12 +20,15 @@ ReportFlow の PDF 帳票生成機能を Claude や AI エージェントから�
 
 ## 認証方式
 
-OAuth2 **authorization_code + PKCE (S256)** フロー。Confidential client (client_secret 必要)。
+OAuth2 **authorization_code + PKCE (S256)** フロー。**Public client (PKCE のみ・シークレット不要) を推奨**。
 
-- ユーザーは ReportFlow Web で **OAuth クライアント** を発行 → 各ユーザー・各ワークスペースごとに異なるクライアント
+- ユーザーは ReportFlow Web で **OAuth クライアント** を 1 度発行 (Public、workspace 非依存)
 - MCP は `authenticate` ツール起動でブラウザを開き、ログイン → ワークスペース選択 → consent → JWT 取得 → ローカル保存
+- consent 画面でユーザーが毎回ワークスペースを選択 → 同じ client_id で複数ワークスペース横断で利用可能
 - 取得 JWT は OS の **Keychain** (macOS Keychain / Windows Credential Manager / Linux libsecret) に優先保存。失敗時は XDG file (chmod 0600) にフォールバック
 - access_token 失効時は refresh_token で自動更新
+
+> ℹ️ Confidential client (`client_secret` 付き) で運用したい場合は、`REPORTFLOW_CLIENT_SECRET` を設定すれば自動的にトークン交換時に送信されます。
 
 ---
 
@@ -33,14 +36,15 @@ OAuth2 **authorization_code + PKCE (S256)** フロー。Confidential client (cli
 
 ### 1. ReportFlow Web で OAuth クライアントを発行
 
-1. ReportFlow にログイン → 対象ワークスペースを選択
+1. ReportFlow にログイン
 2. 設定 → OAuth クライアント → 新規作成
 3. 以下を設定:
    - **Name**: `MCP Client (任意の識別名)`
    - **Redirect URIs**: `http://localhost:53682/callback` (CALLBACK_PORT を変える場合は対応する値)
    - **Allowed Scopes**: `openid profile designs:read designs:write templates:read templates:write pdf:generate`
-   - **Public/Confidential**: **Confidential** (client_secret あり)
-4. 発行された `client_id` と `client_secret` をコピー (secret は再表示できないので注意)
+   - **クライアントタイプ**: **Public** (PKCE のみ、シークレット不要)
+   - **適用範囲**: **全ワークスペース共通** (ワークスペース選択は認証時に毎回行います)
+4. 発行された `client_id` をコピー (Public client なので secret はありません)
 
 ### 2. Claude Code (`.mcp.json`)
 
@@ -53,8 +57,7 @@ OAuth2 **authorization_code + PKCE (S256)** フロー。Confidential client (cli
       "command": "npx",
       "args": ["-y", "@reportflow/mcp-server"],
       "env": {
-        "REPORTFLOW_CLIENT_ID": "<発行された値>",
-        "REPORTFLOW_CLIENT_SECRET": "<発行された値>"
+        "REPORTFLOW_CLIENT_ID": "<発行された値>"
       }
     }
   }
@@ -65,7 +68,8 @@ OAuth2 **authorization_code + PKCE (S256)** フロー。Confidential client (cli
 ローカル開発で異なる URL を使う場合のみ `REPORTFLOW_AUTH_URL` /
 `REPORTFLOW_API_BASE_URL` を `env` に追加してください。
 
-> ⚠️ `.mcp.json` は git で追跡されないよう `.gitignore` に追加してください (`client_secret` を含むため)。
+Public client は client_id 単独で安全に運用できますが、念のため `.mcp.json` を
+`.gitignore` に入れて公開リポジトリに混入しないようにすることをおすすめします。
 
 ### 3. Claude Desktop
 
@@ -88,8 +92,8 @@ Claude が `authenticate` ツールを呼び、ブラウザが起動します。
 
 | 変数名 | 必須 | デフォルト | 説明 |
 |--------|------|-----------|------|
-| `REPORTFLOW_CLIENT_ID` | **◯** | — | OAuth2 Confidential client_id (Web で発行) |
-| `REPORTFLOW_CLIENT_SECRET` | **◯** | — | OAuth2 Confidential client_secret (Web で発行) |
+| `REPORTFLOW_CLIENT_ID` | **◯** | — | OAuth2 client_id (Web で発行。Public/Confidential 共通) |
+| `REPORTFLOW_CLIENT_SECRET` | 任意 | — | Confidential client を使う場合のみ (Public client では不要) |
 | `REPORTFLOW_API_BASE_URL` | 任意 | `https://api.re-port-flow.com` | Content Service の URL (staging/local で上書き) |
 | `REPORTFLOW_AUTH_URL` | 任意 | `https://re-port-flow.com/api/v1` | reposts-api OAuth2 ベース URL (staging/local で上書き) |
 | `REPORTFLOW_CALLBACK_PORT` | 任意 | `53682` | ローカルコールバックサーバーのポート (redirect_uri と一致必須) |
@@ -186,7 +190,7 @@ yarn lint       # ESLint チェック
 2. ローカルコールバックサーバーを `localhost:CALLBACK_PORT` で起動
 3. ブラウザで `<AUTH_URL>/oauth/authorize?response_type=code&client_id=...&redirect_uri=...&code_challenge=...&code_challenge_method=S256&state=...` を開く
 4. ユーザーがログイン → ワークスペース選択 → 同意 → callback に code 飛ぶ
-5. `<AUTH_URL>/oauth/token` (POST, `grant_type=authorization_code`) で code + code_verifier + client_secret を送り JWT 取得
+5. `<AUTH_URL>/oauth/token` (POST, `grant_type=authorization_code`) で code + code_verifier (+ Confidential 時のみ client_secret) を送り JWT 取得
 6. JWT を keychain (or XDG file) に保存。`account = client_id`、`service = reportflow-mcp`
 7. 以後の API 呼び出しは `Authorization: Bearer <jwt>` ヘッダ
 8. `expires_in` 経過時は refresh_token で自動更新

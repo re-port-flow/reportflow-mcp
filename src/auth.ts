@@ -17,7 +17,11 @@ const TOKEN_EXPIRY_BUFFER_MS = 60_000;
 type OAuthConfig = {
   authBase: string;
   clientId: string;
-  clientSecret: string;
+  /**
+   * Confidential client (PKCE + client_secret) を使う場合のみ設定。
+   * Public client (PKCE のみ) では省略する。OSS 配布用途では Public 推奨。
+   */
+  clientSecret?: string;
   callbackPort: number;
   scope: string;
 };
@@ -52,7 +56,7 @@ const getOAuthConfig = (): OAuthConfig => {
   const clientId = process.env['REPORTFLOW_CLIENT_ID'];
   const clientSecret = process.env['REPORTFLOW_CLIENT_SECRET'];
   if (!clientId) throw new Error('REPORTFLOW_CLIENT_ID is required');
-  if (!clientSecret) throw new Error('REPORTFLOW_CLIENT_SECRET is required');
+  // CLIENT_SECRET は Public client では不要。設定されていれば Confidential として扱う。
 
   const portStr = process.env['REPORTFLOW_CALLBACK_PORT'];
   const callbackPort = portStr ? parseInt(portStr, 10) : DEFAULT_CALLBACK_PORT;
@@ -112,18 +116,30 @@ const buildAuthorizeUrl = (
   return url.toString();
 };
 
+const buildTokenRequestBody = (
+  config: OAuthConfig,
+  payload: Record<string, string>,
+): string => {
+  const body: Record<string, string> = {
+    ...payload,
+    client_id: config.clientId,
+  };
+  if (config.clientSecret) {
+    body['client_secret'] = config.clientSecret;
+  }
+  return JSON.stringify(body);
+};
+
 const exchangeCode = async (
   config: OAuthConfig,
   params: { code: string; codeVerifier: string; redirectUri: string },
 ): Promise<TokenSet> => {
   const url = new URL('oauth/token', config.authBase).toString();
-  const body = JSON.stringify({
+  const body = buildTokenRequestBody(config, {
     grant_type: 'authorization_code',
     code: params.code,
     code_verifier: params.codeVerifier,
     redirect_uri: params.redirectUri,
-    client_id: config.clientId,
-    client_secret: config.clientSecret,
   });
   const resp = await fetchJson<TokenResponse>(url, {
     method: 'POST',
@@ -138,11 +154,9 @@ const refreshTokens = async (
   refreshToken: string,
 ): Promise<TokenSet> => {
   const url = new URL('oauth/token', config.authBase).toString();
-  const body = JSON.stringify({
+  const body = buildTokenRequestBody(config, {
     grant_type: 'refresh_token',
     refresh_token: refreshToken,
-    client_id: config.clientId,
-    client_secret: config.clientSecret,
   });
   const resp = await fetchJson<TokenResponse>(url, {
     method: 'POST',

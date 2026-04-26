@@ -5,9 +5,9 @@ declare global {
       REPORTFLOW_API_BASE_URL?: string;
       /** [任意] reposts-api ベース URL (デフォルト: https://re-port-flow.com/api/v1、開発/staging で上書き) */
       REPORTFLOW_AUTH_URL?: string;
-      /** [必須] OAuth2 Confidential client の client_id (ReportFlow Web で発行) */
+      /** [必須] OAuth2 client_id (ReportFlow Web で発行。Public/Confidential 共通) */
       REPORTFLOW_CLIENT_ID?: string;
-      /** [必須] OAuth2 Confidential client の client_secret (ReportFlow Web で発行) */
+      /** [任意] Confidential client を使う場合のみ設定。Public client (PKCE のみ) では不要 */
       REPORTFLOW_CLIENT_SECRET?: string;
       /** ローカルコールバックサーバーのポート番号 (デフォルト 53682) */
       REPORTFLOW_CALLBACK_PORT?: string;
