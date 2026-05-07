@@ -1,0 +1,38 @@
+# Smithery configuration: https://smithery.ai/docs/build/project-config/smithery.yaml
+#
+# reportflow-mcp uses OAuth2 authorization_code + PKCE which opens a browser
+# tab on first run for user consent. This requires a local execution
+# environment with browser access — it cannot run in Smithery's hosted
+# sandbox. Users install via Smithery and the CLI starts a local npx process.
+
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      reportflowClientId:
+        type: string
+        description: Override default OAuth client_id (optional). Leave empty to use the official public client.
+      reportflowAuthUrl:
+        type: string
+        description: Override default ReportFlow auth URL (optional). Defaults to https://re-port-flow.com/api/v1.
+      reportflowApiBaseUrl:
+        type: string
+        description: Override default ReportFlow Content Service URL (optional). Defaults to https://api.re-port-flow.com.
+      reportflowTokenStore:
+        type: string
+        enum:
+          - keychain
+          - file
+        description: Token store backend (optional). Defaults to keychain.
+  commandFunction: |-
+    (config) => ({
+      command: 'npx',
+      args: ['-y', 'reportflow-mcp'],
+      env: {
+        ...(config.reportflowClientId && { REPORTFLOW_CLIENT_ID: config.reportflowClientId }),
+        ...(config.reportflowAuthUrl && { REPORTFLOW_AUTH_URL: config.reportflowAuthUrl }),
+        ...(config.reportflowApiBaseUrl && { REPORTFLOW_API_BASE_URL: config.reportflowApiBaseUrl }),
+        ...(config.reportflowTokenStore && { REPORTFLOW_TOKEN_STORE: config.reportflowTokenStore })
+      }
+    })
