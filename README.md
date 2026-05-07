@@ -1,4 +1,4 @@
-# @reportflow/mcp-server
+# reportflow-mcp-server
 
 ReportFlow の PDF 帳票生成機能を Claude や AI エージェントから利用するための MCP（Model Context Protocol）サーバーです。
 
@@ -71,7 +71,7 @@ OAuth2 **authorization_code + PKCE (S256)** Public client。シークレット (
   "mcpServers": {
     "reportflow": {
       "command": "npx",
-      "args": ["-y", "@reportflow/mcp-server"]
+      "args": ["-y", "reportflow-mcp-server"]
     }
   }
 }
