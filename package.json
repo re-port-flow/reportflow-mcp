@@ -1,17 +1,17 @@
 {
   "name": "reportflow-mcp",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "ReportFlow MCP Server - PDF report generation for Claude and AI agents",
   "keywords": ["mcp", "pdf", "report", "reportflow", "claude", "anthropic", "ai-agent"],
   "license": "MIT",
   "author": "株式会社マネプラ",
-  "homepage": "https://github.com/re-port-flow/report-mcp#readme",
+  "homepage": "https://github.com/re-port-flow/reportflow-mcp#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/re-port-flow/report-mcp.git"
+    "url": "git+https://github.com/re-port-flow/reportflow-mcp.git"
   },
   "bugs": {
-    "url": "https://github.com/re-port-flow/report-mcp/issues"
+    "url": "https://github.com/re-port-flow/reportflow-mcp/issues"
   },
   "publishConfig": {
     "access": "public"
