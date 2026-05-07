@@ -5,13 +5,13 @@
   "keywords": ["mcp", "pdf", "report", "reportflow", "claude", "anthropic", "ai-agent"],
   "license": "MIT",
   "author": "株式会社マネプラ",
-  "homepage": "https://github.com/monepla/report-mcp#readme",
+  "homepage": "https://github.com/re-port-flow/report-mcp#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/monepla/report-mcp.git"
+    "url": "git+https://github.com/re-port-flow/report-mcp.git"
   },
   "bugs": {
-    "url": "https://github.com/monepla/report-mcp/issues"
+    "url": "https://github.com/re-port-flow/report-mcp/issues"
   },
   "publishConfig": {
     "access": "public"
