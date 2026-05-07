@@ -3,20 +3,20 @@
 [![npm version](https://img.shields.io/npm/v/reportflow-mcp.svg)](https://www.npmjs.com/package/reportflow-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-[ReportFlow](https://re-port-flow.com) で作成したテンプレートから PDF 帳票 (請求書・契約書・報告書など) を生成する MCP (Model Context Protocol) サーバー。Claude や AI エージェントから自然言語で帳票を依頼できます。
+An MCP (Model Context Protocol) server that turns your [ReportFlow](https://re-port-flow.com) templates into PDF reports — invoices, contracts, statements, anything you've designed — straight from Claude or any other MCP-compatible AI agent.
 
-## できること
+## What it does
 
-- 「請求書を株式会社サンプル宛に 3 万円で作って」のような自然文で **PDF 即時生成**
-- ReportFlow のデザイン一覧・パラメータスキーマを **AI のコンテキストに直接貼り付け**
-- 複数件を **ZIP で一括生成**
-- 生成した PDF は **作業中のワークスペース直下に自動保存**
+- Generate PDFs from natural-language requests like *"create an invoice for Acme Corp totalling $300"*
+- Expose your ReportFlow designs and their parameter schemas directly to the AI as MCP **Resources**
+- Bulk-generate many PDFs and download them as a single ZIP
+- Save outputs to whichever workspace folder the user is currently in (Claude Desktop / Claude Code / Cursor / VS Code all supported)
 
-## セットアップ
+## Setup
 
 ### Claude Desktop / Claude Code / Cursor
 
-設定ファイル (`.mcp.json`, `claude_desktop_config.json`, `~/.cursor/mcp.json` など) に追加:
+Add the following to your config file (`.mcp.json`, `claude_desktop_config.json`, `~/.cursor/mcp.json`, etc.):
 
 ```json
 {
@@ -29,95 +29,95 @@
 }
 ```
 
-これだけです。
+That's the whole setup. No env vars, no API keys, no secrets to manage.
 
-### VS Code (MCP 対応版)
+### VS Code (MCP-enabled builds)
 
-`.vscode/mcp.json` に同形式で追加。
+Same JSON in `.vscode/mcp.json`.
 
-### 動作要件
+### Requirements
 
-- Node.js 18+ (npx 経由なので自動取得)
-- ブラウザが起動できるローカル環境 (初回認証時に必要)
-- ReportFlow アカウント (https://re-port-flow.com)
+- Node.js 18+ (auto-fetched by `npx`)
+- A local environment with a browser (only required during the first login)
+- A [ReportFlow](https://re-port-flow.com) account
 
-## 使い方
+## Usage
 
-### 1. 初回認証
+### 1. First-run authentication
 
-クライアントをリロード後、AI にこう頼みます:
+After reloading the MCP client, ask the AI:
 
-> ReportFlow で認証して
+> Authenticate with ReportFlow
 
-ブラウザが起動するので、**ログイン → ワークスペース選択 → 同意** で完了。
-トークンは OS の Keychain (macOS Keychain / Windows Credential Manager / Linux libsecret) に保存され、以後は自動更新されます。
+A browser window opens. **Sign in → pick a workspace → consent**, and you're done.
+Tokens are stored in your OS keychain (macOS Keychain / Windows Credential Manager / Linux libsecret) and refreshed automatically.
 
-### 2. 帳票を作る
+### 2. Generate a PDF
 
-#### 自然文で依頼 (一番楽)
+#### Natural language (easiest)
 
-> 請求書テンプレで、宛先「株式会社サンプル」、合計 33,000 円の PDF を作って
+> Using the invoice template, create a PDF for Acme Corp totalling $330.
 
-AI が `list_templates` でデザインを探し、`get_design_parameters` で必要項目を確認し、`generate_pdf_sync` で PDF を生成 → ローカルパスを返します。
+The AI will look up the template via `list_templates`, fetch its parameter schema with `get_design_parameters`, fill in the values, and call `generate_pdf_sync` — returning a local file path.
 
-#### スラッシュコマンド
+#### Slash commands
 
-| コマンド | 用途 |
+| Command | Purpose |
 |---|---|
-| `/generate_pdf` | 単一 PDF 生成のステップガイド |
-| `/generate_pdfs` | 複数 PDF 一括生成のガイド |
-| `/reportflow_help` | 機能ヘルプ |
+| `/generate_pdf` | Step-by-step recipe for a single PDF |
+| `/generate_pdfs` | Recipe for batch PDF generation |
+| `/reportflow_help` | Quick feature tour |
 
-### 3. 保存先のルール
+### 3. Where files are saved
 
-PDF の保存先は次の順で決まります:
+Output location is resolved in this order:
 
-1. AI に「Desktop に保存して」のように明示指示 → そのパス
-2. 指示なし → クライアントの開いているワークスペース直下
-3. 上記が取れない → OS の一時ディレクトリ
+1. Explicit instruction from the user (e.g. *"save to my Desktop"*)
+2. The currently-open workspace root (Claude Code / Cursor / VS Code)
+3. The OS temp directory as fallback
 
-## できること詳細
+## Reference
 
-### Tools (AI が呼び出す)
+### Tools (called by the AI)
 
-| ツール | 用途 |
+| Tool | Purpose |
 |---|---|
-| `authenticate` | 初回 / 再認証 |
-| `list_templates` | デザイン一覧を取得 |
-| `get_design_parameters` | デザインに必要なパラメータ構造を取得 |
-| `generate_pdf_sync` / `_async` | 単一 PDF 生成 (即時 / 非同期) |
-| `generate_pdfs_sync` / `_async` | 複数 PDF 一括生成 (ZIP 即時 / 非同期) |
-| `download_file` / `download_zip` | 非同期生成したファイルをダウンロード |
-| `suggest_params` | 自然文要件から params JSON を整形 (Sampling 対応クライアント要) |
+| `authenticate` | First-time / re-authentication |
+| `list_templates` | List available designs |
+| `get_design_parameters` | Fetch the parameter schema for a design |
+| `generate_pdf_sync` / `_async` | Generate one PDF (sync returns path; async returns request ID) |
+| `generate_pdfs_sync` / `_async` | Generate many PDFs (returns a ZIP) |
+| `download_file` / `download_zip` | Download artifacts produced by async tools |
+| `suggest_params` | Translate a natural-language brief into a `params` JSON via MCP Sampling (requires a Sampling-capable client) |
 
-### Resources (AI に直接コンテキスト追加できる URI)
+### Resources (attachable as AI context)
 
-| URI | 内容 |
+| URI | Contents |
 |---|---|
-| `reportflow://designs` | 利用可能なデザイン一覧 |
-| `reportflow://designs/{designId}/parameters` | デザインのパラメータスキーマ |
-| `reportflow://errors` | エラーメッセージカタログ |
-| `reportflow://server-info` | サーバー機能の概観 |
+| `reportflow://designs` | List of available designs |
+| `reportflow://designs/{designId}/parameters` | Parameter schema for one design |
+| `reportflow://errors` | Catalog of error messages from the Content Service |
+| `reportflow://server-info` | Server feature overview |
 
-### Prompts (スラッシュコマンドのレシピカード)
+### Prompts (slash-command recipe cards)
 
-`/generate_pdf` `/generate_pdfs` `/reportflow_help` の 3 種類。引数を入れれば AI がそのまま実行手順を組み立てます。
+`/generate_pdf`, `/generate_pdfs`, `/reportflow_help` — pass arguments and the AI follows the prepared workflow.
 
-## トラブルシューティング
+## Troubleshooting
 
-| 症状 | 対応 |
+| Symptom | Fix |
 |---|---|
-| `再認証が必要です` のエラー | AI に「ReportFlow で再認証して」と依頼 |
-| `npx` が package を見つけない | `npm cache clean --force` 後に再実行 |
-| Linux で Keychain が無い | 自動的に `$XDG_STATE_HOME/reportflow-mcp/` (chmod 0600) にフォールバック保存 |
-| SSH/リモート環境でブラウザが開かない | 認証は **ローカル端末で 1 回**実施。トークンが Keychain に保存されたあとはリモート利用も可 |
+| Error containing `re-authentication required` | Ask the AI: *"re-authenticate with ReportFlow"* |
+| `npx` cannot find the package | `npm cache clean --force` then retry |
+| No keychain available on Linux | Falls back automatically to a chmod-0600 file under `$XDG_STATE_HOME/reportflow-mcp/` |
+| Browser cannot open over SSH / remote shell | Authenticate **once on a local machine**; afterwards the cached token works on remote hosts |
 
-## ライセンス
+## License
 
-MIT — [LICENSE](./LICENSE) を参照。
+MIT — see [LICENSE](./LICENSE).
 
-## リンク
+## Links
 
-- ReportFlow 本体: https://re-port-flow.com
+- ReportFlow: https://re-port-flow.com
 - npm: https://www.npmjs.com/package/reportflow-mcp
-- Issue 報告: https://github.com/re-port-flow/reportflow-mcp/issues
+- Issues: https://github.com/re-port-flow/reportflow-mcp/issues
