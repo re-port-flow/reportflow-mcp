@@ -1,70 +1,22 @@
 # reportflow-mcp
 
-ReportFlow の PDF 帳票生成機能を Claude や AI エージェントから利用するための MCP（Model Context Protocol）サーバーです。
+[![npm version](https://img.shields.io/npm/v/reportflow-mcp.svg)](https://www.npmjs.com/package/reportflow-mcp)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-MCP の 5 つの機能ブロックをすべてサポートしています: **Tools / Prompts / Resources / Sampling / Roots**。
+[ReportFlow](https://re-port-flow.com) で作成したテンプレートから PDF 帳票 (請求書・契約書・報告書など) を生成する MCP (Model Context Protocol) サーバー。Claude や AI エージェントから自然言語で帳票を依頼できます。
 
-## 機能
+## できること
 
-### Tools（AI が必要に応じて呼び出す）
-
-| ツール | 概要 |
-|--------|------|
-| `authenticate` | **初回認証 / 再認証**。ブラウザで OAuth2 + ワークスペース選択を行い、トークンを keychain (または XDG file) に保存 |
-| `list_templates` | ワークスペース内のデザイン一覧を取得 |
-| `get_design_parameters` | デザインに必要なパラメータ構造を取得 |
-| `generate_pdf_sync` | PDF を同期生成してローカルパスを返す |
-| `generate_pdf_async` | PDF を非同期生成して requestId を返す |
-| `generate_pdfs_sync` | 複数 PDF を一括同期生成（ZIP）してローカルパスを返す |
-| `generate_pdfs_async` | 複数 PDF を一括非同期生成して requestId を返す |
-| `download_file` | 非同期生成した単一 PDF をダウンロード |
-| `download_zip` | 非同期生成した ZIP をダウンロード |
-| `suggest_params` | **Sampling 使用**。自然文の要件からクライアント AI に params JSON を整形させる |
-
-### Prompts（スラッシュコマンドとしてユーザーが呼ぶレシピカード）
-
-| Prompt | 概要 |
-|--------|------|
-| `/generate_pdf` | 単一 PDF 生成のステップガイド。`designId` / `description` / `outputDir` を引数として受け取ります |
-| `/generate_pdfs` | 複数 PDF 一括生成のステップガイド。`designId` / `source` / `outputDir` / `zipFileName` |
-| `/reportflow_help` | 提供機能の概要ヘルプ |
-
-### Resources（AI のコンテキストに負担をかけず貼り付けられる生データ）
-
-| URI | 概要 |
-|-----|------|
-| `reportflow://designs` | デザイン一覧（`list_templates` 同等の JSON） |
-| `reportflow://designs/{designId}/parameters` | 各デザインのパラメータスキーマ（動的テンプレート） |
-| `reportflow://errors` | Content Service が返す主要エラーメッセージカタログ |
-| `reportflow://server-info` | サーバー提供機能・対応ワークフローの概観 |
-
-### Sampling
-
-`suggest_params` ツールは `sampling/createMessage` を使い、**サーバー側 API キーを持たずにクライアント AI に作業を委譲**します。スキーマを入手した上で自然文の要件を params JSON に整形し、解釈不可なら一回だけ自己修正します。Sampling 未対応クライアント (stdio 単体を読んでいる補助ツール等) では当該ツールはエラーとなります。
-
-### Roots
-
-`generate_pdf_sync` / `generate_pdfs_sync` で `outputDir` 未指定時、クライアントが提示するワークスペース (Roots) の最初の `file://` を outputDir として使用します。VS Code ・ Claude Desktop から接続したときはそのワークスペース直下に出力されます。Roots 未対応クライアント・取得失敗時は OS 一時ディレクトリ (`<tmp>/reportflow`) にフォールバックします。
-
----
-
-## 認証方式
-
-OAuth2 **authorization_code + PKCE (S256)** Public client。シークレット (`client_secret`) は使用しません。
-
-- 公式 OAuth client (`reportflow-mcp`) は ReportFlow 側で配布済み — **ユーザー側で発行作業は不要**
-- MCP は `authenticate` ツール起動でブラウザを開き、ログイン → ワークスペース選択 → consent → JWT 取得 → ローカル保存
-- consent 画面で毎回ワークスペースを選択 → 同じインストールで複数ワークスペース横断で利用可能
-- 取得 JWT は OS の **Keychain** (macOS Keychain / Windows Credential Manager / Linux libsecret) に優先保存。失敗時は XDG file (chmod 0600) にフォールバック
-- access_token 失効時は refresh_token で自動更新
-
----
+- 「請求書を株式会社サンプル宛に 3 万円で作って」のような自然文で **PDF 即時生成**
+- ReportFlow のデザイン一覧・パラメータスキーマを **AI のコンテキストに直接貼り付け**
+- 複数件を **ZIP で一括生成**
+- 生成した PDF は **作業中のワークスペース直下に自動保存**
 
 ## セットアップ
 
-### 1. Claude Code (`.mcp.json`)
+### Claude Desktop / Claude Code / Cursor
 
-プロジェクトの `.mcp.json` に以下を追加するだけ:
+設定ファイル (`.mcp.json`, `claude_desktop_config.json`, `~/.cursor/mcp.json` など) に追加:
 
 ```json
 {
@@ -77,148 +29,95 @@ OAuth2 **authorization_code + PKCE (S256)** Public client。シークレット (
 }
 ```
 
-env はすべて任意。staging/local で別 URL を使う場合のみ `REPORTFLOW_AUTH_URL` / `REPORTFLOW_API_BASE_URL` を上書き設定してください。
+これだけです。
 
-### 2. Claude Desktop
+### VS Code (MCP 対応版)
 
-`~/Library/Application Support/Claude/claude_desktop_config.json` も同形式。Sampling と Roots に対応しているため、`suggest_params` ツールやワークスペース自動保存もそのまま動きます。
+`.vscode/mcp.json` に同形式で追加。
 
-### 3. 初回認証
+### 動作要件
 
-Claude Code をリロード後、Claude に依頼:
+- Node.js 18+ (npx 経由なので自動取得)
+- ブラウザが起動できるローカル環境 (初回認証時に必要)
+- ReportFlow アカウント (https://re-port-flow.com)
 
-```
-ReportFlow で認証して
-```
+## 使い方
 
-Claude が `authenticate` ツールを呼び、ブラウザが起動します。ログイン → ワークスペース選択 → 同意 で完了 (`gh auth login` と同等)。
-以後はトークンが期限切れになるまで他のツール (list_templates 等) を使えます。期限切れは自動 refresh、refresh も失敗したら `authenticate` を再実行してください。
+### 1. 初回認証
 
----
+クライアントをリロード後、AI にこう頼みます:
 
-## 環境変数
+> ReportFlow で認証して
 
-| 変数名 | 必須 | デフォルト | 説明 |
-|--------|------|-----------|------|
-| `REPORTFLOW_CLIENT_ID` | 任意 | `reportflow-mcp` | 公式 client_id を上書きする場合のみ |
-| `REPORTFLOW_API_BASE_URL` | 任意 | `https://api.re-port-flow.com` | Content Service の URL (staging/local で上書き) |
-| `REPORTFLOW_AUTH_URL` | 任意 | `https://re-port-flow.com/api/v1` | ReportFlow OAuth2 サーバーのベース URL (staging/local で上書き) |
-| `REPORTFLOW_CALLBACK_PORT` | 任意 | `53682` | ローカルコールバックサーバーのポート (redirect_uri と一致必須) |
-| `REPORTFLOW_SCOPE` | 任意 | `openid profile designs:read designs:write templates:read templates:write pdf:generate` | 要求スコープ (空白区切り) |
-| `REPORTFLOW_TOKEN_STORE` | 任意 | 自動 (keychain → file) | `keychain` / `file` 強制指定 |
-| `REPORTFLOW_TOKEN_STORE_PATH` | 任意 | `$XDG_STATE_HOME/reportflow-mcp` | file モード時の保存ディレクトリ |
+ブラウザが起動するので、**ログイン → ワークスペース選択 → 同意** で完了。
+トークンは OS の Keychain (macOS Keychain / Windows Credential Manager / Linux libsecret) に保存され、以後は自動更新されます。
 
----
+### 2. 帳票を作る
 
-## 帳票生成の基本フロー
+#### 自然文で依頼 (一番楽)
 
-### 1. テンプレート選択 → パラメータ確認 → PDF 生成（同期）
+> 請求書テンプレで、宛先「株式会社サンプル」、合計 33,000 円の PDF を作って
 
-```
-0. authenticate            → 初回のみ。ブラウザでログイン・workspace 選択
-1. list_templates          → designId 一覧を確認
-2. get_design_parameters   → designId でパラメータ構造を確認
-3. generate_pdf_sync       → パラメータを埋めて PDF を即時生成
-```
+AI が `list_templates` でデザインを探し、`get_design_parameters` で必要項目を確認し、`generate_pdf_sync` で PDF を生成 → ローカルパスを返します。
 
-またはスラッシュコマンドで一括依頼:
+#### スラッシュコマンド
 
-```
-/generate_pdf description="請求書、宛先株式会社サンプル、3万円"
-```
+| コマンド | 用途 |
+|---|---|
+| `/generate_pdf` | 単一 PDF 生成のステップガイド |
+| `/generate_pdfs` | 複数 PDF 一括生成のガイド |
+| `/reportflow_help` | 機能ヘルプ |
 
-または Sampling を使って params を AI に整形させる:
+### 3. 保存先のルール
 
-```
-suggest_params ツールを呼び、返った params を generate_pdf_sync に渡して
-```
+PDF の保存先は次の順で決まります:
 
-### 2. 非同期生成（大量ファイル向け）
+1. AI に「Desktop に保存して」のように明示指示 → そのパス
+2. 指示なし → クライアントの開いているワークスペース直下
+3. 上記が取れない → OS の一時ディレクトリ
 
-```
-0. authenticate            → 初回のみ
-1. list_templates          → designId 一覧を確認
-2. get_design_parameters   → パラメータ構造を確認
-3. generate_pdfs_async     → 複数件を非同期生成
-4. download_zip            → requestId で ZIP をダウンロード
-```
+## できること詳細
 
-### 出力先の決定ルール
-
-`generate_pdf_sync` / `generate_pdfs_sync` / `download_file` / `download_zip` の保存先は次の順で決まります。
-
-1. `outputDir` が明示指定されている → そのディレクトリ
-2. クライアントが Roots を提示 (VS Code / Claude Desktop のワークスペース等) → そのパス
-3. いずれもない → OS 一時ディレクトリ (`<tmp>/reportflow`)
-
-ユーザーが明示的に保存先を指示した場合のみ Claude が `outputDir` をセットします。
-
----
-
-## CLAUDE.md への追加スニペット
-
-ReportFlow MCP サーバーを使うプロジェクトの `CLAUDE.md` に以下を追記することで、Claude が帳票生成ツールを正しく活用できるようになります。
-
-````markdown
-## ReportFlow MCP 帳票生成
-
-### 利用可能ツール
+### Tools (AI が呼び出す)
 
 | ツール | 用途 |
-|--------|------|
-| `authenticate` | 初回認証 / 再認証 (他のツールが認証エラーを出したら最初に呼ぶ) |
-| `list_templates` | デザイン一覧取得（designId の確認に使う） |
-| `get_design_parameters` | 指定デザインの必要パラメータ構造を取得 |
-| `generate_pdf_sync` | 単一 PDF を即時生成 → ローカルパスを返す |
-| `generate_pdf_async` | 単一 PDF を非同期生成 → requestId + fileId を返す |
-| `generate_pdfs_sync` | 複数 PDF を一括即時生成 → ZIP パスを返す |
-| `generate_pdfs_async` | 複数 PDF を一括非同期生成 → requestId を返す |
-| `download_file` | requestId + fileId でファイルをダウンロード |
-| `download_zip` | requestId で ZIP をダウンロード |
-| `suggest_params` | 自然文要件 + スキーマから params JSON を Sampling で生成 |
+|---|---|
+| `authenticate` | 初回 / 再認証 |
+| `list_templates` | デザイン一覧を取得 |
+| `get_design_parameters` | デザインに必要なパラメータ構造を取得 |
+| `generate_pdf_sync` / `_async` | 単一 PDF 生成 (即時 / 非同期) |
+| `generate_pdfs_sync` / `_async` | 複数 PDF 一括生成 (ZIP 即時 / 非同期) |
+| `download_file` / `download_zip` | 非同期生成したファイルをダウンロード |
+| `suggest_params` | 自然文要件から params JSON を整形 (Sampling 対応クライアント要) |
 
-### 帳票生成の流れ
+### Resources (AI に直接コンテキスト追加できる URI)
 
-1. (初回のみ) `authenticate` でブラウザログイン・ワークスペース選択
-2. `list_templates` でデザイン一覧を取得し、目的の `id`（designId）を確認
-3. `get_design_parameters` で `designId` と `version`（latestVersion）を指定してパラメータ構造を確認
-4. パラメータを埋めて `generate_pdf_sync` で PDF を生成
+| URI | 内容 |
+|---|---|
+| `reportflow://designs` | 利用可能なデザイン一覧 |
+| `reportflow://designs/{designId}/parameters` | デザインのパラメータスキーマ |
+| `reportflow://errors` | エラーメッセージカタログ |
+| `reportflow://server-info` | サーバー機能の概観 |
 
-または、`/generate_pdf` / `/generate_pdfs` スラッシュコマンドからレシピを受け取るとよりスムーズ。
+### Prompts (スラッシュコマンドのレシピカード)
 
-### Resources の活用
+`/generate_pdf` `/generate_pdfs` `/reportflow_help` の 3 種類。引数を入れれば AI がそのまま実行手順を組み立てます。
 
-- `reportflow://designs` や `reportflow://designs/{designId}/parameters` を Resource としてコンテキストに添付すれば、ツール呼び出しを加えずにテンプレを参照できます。
-- エラー判別に迷ったときは `reportflow://errors` を見るとメッセージカタログがあります。
+## トラブルシューティング
 
-### 注意事項
+| 症状 | 対応 |
+|---|---|
+| `再認証が必要です` のエラー | AI に「ReportFlow で再認証して」と依頼 |
+| `npx` が package を見つけない | `npm cache clean --force` 後に再実行 |
+| Linux で Keychain が無い | 自動的に `$XDG_STATE_HOME/reportflow-mcp/` (chmod 0600) にフォールバック保存 |
+| SSH/リモート環境でブラウザが開かない | 認証は **ローカル端末で 1 回**実施。トークンが Keychain に保存されたあとはリモート利用も可 |
 
-- 認証エラー (`再認証が必要です` を含むメッセージ) が出たら、まず `authenticate` を呼ぶこと
-- `params` の型は `get_design_parameters` の結果に従うこと
-  - `"string"` → 文字列、`"number"` → 数値、`"date"` → "YYYY-MM-DD" 形式
-  - 配列型（`[{...}]`）はオブジェクトの配列を渡す
-- `version` は `list_templates` で返る `latestVersion` を使用
-- 同期生成（sync）は即座にファイルパスが返る。件数が多い場合は async を使うこと
-````
+## ライセンス
 
----
+MIT — [LICENSE](./LICENSE) を参照。
 
-## 開発
+## リンク
 
-```bash
-yarn install
-yarn test       # ユニットテスト実行
-yarn build      # TypeScript ビルド
-yarn lint       # ESLint チェック
-```
-
-### 認証フロー (内部実装)
-
-1. `authenticate` ツール起動 → PKCE `code_verifier` / `code_challenge` を生成
-2. ローカルコールバックサーバーを `localhost:CALLBACK_PORT` で起動
-3. ブラウザで `<AUTH_URL>/oauth/authorize?response_type=code&client_id=...&redirect_uri=...&code_challenge=...&code_challenge_method=S256&state=...` を開く
-4. ユーザーがログイン → ワークスペース選択 → 同意 → callback に code 飛ぶ
-5. `<AUTH_URL>/oauth/token` (POST, `grant_type=authorization_code`) で code + code_verifier を送り JWT 取得 (Public client: client_secret なし)
-6. JWT を keychain (or XDG file) に保存。`account = client_id`、`service = reportflow-mcp`
-7. 以後の API 呼び出しは `Authorization: Bearer <jwt>` ヘッダ
-8. `expires_in` 経過時は refresh_token で自動更新
+- ReportFlow 本体: https://re-port-flow.com
+- npm: https://www.npmjs.com/package/reportflow-mcp
+- Issue 報告: https://github.com/re-port-flow/reportflow-mcp/issues
