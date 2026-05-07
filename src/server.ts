@@ -28,11 +28,18 @@ import {
 import { downloadFileTool, handleDownloadFile } from './tools/download-file.js';
 import { downloadZipTool, handleDownloadZip } from './tools/download-zip.js';
 import { authenticateTool, handleAuthenticate } from './tools/authenticate.js';
+import {
+  suggestParamsTool,
+  handleSuggestParams,
+} from './tools/suggest-params.js';
+import { registerPrompts } from './prompts/index.js';
+import { registerResources } from './resources/index.js';
+import { resolveDefaultOutputDir } from './roots/index.js';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const pkg = require('../package.json') as { name: string; version: string };
 
-// ─── Common Zod Schemas ─────────────────────────────────────────────────────
+// ─── Common Zod Schemas ───────────────────────────────────
 
 const designIdSchema = z.string().describe('デザインID（UUID形式）');
 const versionSchema = z.number().int().describe('デザインバージョン番号');
@@ -53,7 +60,7 @@ const outputDirSchema = z
   .string()
   .optional()
   .describe(
-    '出力先ディレクトリ (相対/絶対)。未指定時は現在の作業ディレクトリに保存。ユーザーが場所を指定した場合のみセットすること。',
+    '出力先ディレクトリ (相対/絶対)。未指定時はクライアントのワークスペース (Roots) または現在の作業ディレクトリに保存。ユーザーが場所を指定した場合のみセットすること。',
   );
 
 const singlePdfSchema = {
@@ -125,12 +132,15 @@ export const startServer = async (): Promise<void> => {
     async (input) => handleListTemplates(input),
   );
 
-  // generate_pdf_sync
+  // generate_pdf_sync (Roots-aware)
   server.tool(
     generatePdfSyncTool.name,
     generatePdfSyncTool.description,
     singlePdfSyncSchema,
-    async (input) => handleGeneratePdfSync(input),
+    async (input) =>
+      handleGeneratePdfSync(input, {
+        resolveOutputDir: () => resolveDefaultOutputDir(server),
+      }),
   );
 
   // generate_pdf_async
@@ -141,12 +151,15 @@ export const startServer = async (): Promise<void> => {
     async (input) => handleGeneratePdfAsync(input),
   );
 
-  // generate_pdfs_sync
+  // generate_pdfs_sync (Roots-aware)
   server.tool(
     generatePdfsSyncTool.name,
     generatePdfsSyncTool.description,
     multiplePdfSyncSchema,
-    async (input) => handleGeneratePdfsSync(input),
+    async (input) =>
+      handleGeneratePdfsSync(input, {
+        resolveOutputDir: () => resolveDefaultOutputDir(server),
+      }),
   );
 
   // generate_pdfs_async
@@ -191,6 +204,29 @@ export const startServer = async (): Promise<void> => {
     },
     async (input) => handleDownloadZip(input),
   );
+
+  // suggest_params (Sampling-backed)
+  server.tool(
+    suggestParamsTool.name,
+    suggestParamsTool.description,
+    {
+      designId: designIdSchema,
+      version: versionSchema
+        .optional()
+        .describe('バージョン番号（省略時は最新版）'),
+      description: z
+        .string()
+        .describe(
+          '帳票の内容を自然文で記述（例: "請求書、宛先A社、合計1万円"）',
+        ),
+    },
+    async (input) => handleSuggestParams(server, input),
+  );
+
+  // Prompts (recipe cards) & Resources (read-only data) — 各 register 関数が
+  // 内部で server.prompt() / server.resource() を呼んで capability を自動登録します。
+  registerPrompts(server);
+  registerResources(server, pkg);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

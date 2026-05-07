@@ -2,7 +2,11 @@
 
 ReportFlow の PDF 帳票生成機能を Claude や AI エージェントから利用するための MCP（Model Context Protocol）サーバーです。
 
+MCP の 5 つの機能ブロックをすべてサポートしています: **Tools / Prompts / Resources / Sampling / Roots**。
+
 ## 機能
+
+### Tools（AI が必要に応じて呼び出す）
 
 | ツール | 概要 |
 |--------|------|
@@ -15,6 +19,32 @@ ReportFlow の PDF 帳票生成機能を Claude や AI エージェントから�
 | `generate_pdfs_async` | 複数 PDF を一括非同期生成して requestId を返す |
 | `download_file` | 非同期生成した単一 PDF をダウンロード |
 | `download_zip` | 非同期生成した ZIP をダウンロード |
+| `suggest_params` | **Sampling 使用**。自然文の要件からクライアント AI に params JSON を整形させる |
+
+### Prompts（スラッシュコマンドとしてユーザーが呼ぶレシピカード）
+
+| Prompt | 概要 |
+|--------|------|
+| `/generate_pdf` | 単一 PDF 生成のステップガイド。`designId` / `description` / `outputDir` を引数として受け取ります |
+| `/generate_pdfs` | 複数 PDF 一括生成のステップガイド。`designId` / `source` / `outputDir` / `zipFileName` |
+| `/reportflow_help` | 提供機能の概要ヘルプ |
+
+### Resources（AI のコンテキストに負担をかけず貼り付けられる生データ）
+
+| URI | 概要 |
+|-----|------|
+| `reportflow://designs` | デザイン一覧（`list_templates` 同等の JSON） |
+| `reportflow://designs/{designId}/parameters` | 各デザインのパラメータスキーマ（動的テンプレート） |
+| `reportflow://errors` | Content Service が返す主要エラーメッセージカタログ |
+| `reportflow://server-info` | サーバー提供機能・対応ワークフローの概観 |
+
+### Sampling
+
+`suggest_params` ツールは `sampling/createMessage` を使い、**サーバー側 API キーを持たずにクライアント AI に作業を委譲**します。スキーマを入手した上で自然文の要件を params JSON に整形し、解釈不可なら一回だけ自己修正します。Sampling 未対応クライアント (stdio 単体を読んでいる補助ツール等) では当該ツールはエラーとなります。
+
+### Roots
+
+`generate_pdf_sync` / `generate_pdfs_sync` で `outputDir` 未指定時、クライアントが提示するワークスペース (Roots) の最初の `file://` を outputDir として使用します。VS Code ・ Claude Desktop から接続したときはそのワークスペース直下に出力されます。Roots 未対応クライアント・取得失敗時は OS 一時ディレクトリ (`<tmp>/reportflow`) にフォールバックします。
 
 ---
 
@@ -51,7 +81,7 @@ env はすべて任意。staging/local で別 URL を使う場合のみ `REPORTF
 
 ### 2. Claude Desktop
 
-`~/Library/Application Support/Claude/claude_desktop_config.json` も同形式。
+`~/Library/Application Support/Claude/claude_desktop_config.json` も同形式。Sampling と Roots に対応しているため、`suggest_params` ツールやワークスペース自動保存もそのまま動きます。
 
 ### 3. 初回認証
 
@@ -91,25 +121,17 @@ Claude が `authenticate` ツールを呼び、ブラウザが起動します。
 3. generate_pdf_sync       → パラメータを埋めて PDF を即時生成
 ```
 
-**Claude への指示例:**
+またはスラッシュコマンドで一括依頼:
+
 ```
-請求書テンプレートの一覧を見せて、その中から「請求書」を選んで
-以下の内容で PDF を作成してください：
-- 宛名: 株式会社サンプル
-- 金額: 50,000円
-- 発行日: 2026-03-13
-- 保存先: ./output  ← 任意。指定しなければ現在の作業ディレクトリに保存
+/generate_pdf description="請求書、宛先株式会社サンプル、3万円"
 ```
 
-### 出力先の指定
+または Sampling を使って params を AI に整形させる:
 
-`generate_pdf_sync` / `generate_pdfs_sync` / `download_file` / `download_zip` は、
-`outputDir` パラメータでファイル保存先を指定できます。
-
-- `outputDir` 指定あり: そのディレクトリに保存 (相対パスは現在の作業ディレクトリ基準で解決、ディレクトリは自動作成)
-- `outputDir` 未指定 : 現在の作業ディレクトリ (`process.cwd()`) に保存
-
-ユーザーが明示的に保存先を指示した場合のみ Claude が `outputDir` をセットします。
+```
+suggest_params ツールを呼び、返った params を generate_pdf_sync に渡して
+```
 
 ### 2. 非同期生成（大量ファイル向け）
 
@@ -120,6 +142,16 @@ Claude が `authenticate` ツールを呼び、ブラウザが起動します。
 3. generate_pdfs_async     → 複数件を非同期生成
 4. download_zip            → requestId で ZIP をダウンロード
 ```
+
+### 出力先の決定ルール
+
+`generate_pdf_sync` / `generate_pdfs_sync` / `download_file` / `download_zip` の保存先は次の順で決まります。
+
+1. `outputDir` が明示指定されている → そのディレクトリ
+2. クライアントが Roots を提示 (VS Code / Claude Desktop のワークスペース等) → そのパス
+3. いずれもない → OS 一時ディレクトリ (`<tmp>/reportflow`)
+
+ユーザーが明示的に保存先を指示した場合のみ Claude が `outputDir` をセットします。
 
 ---
 
@@ -143,6 +175,7 @@ ReportFlow MCP サーバーを使うプロジェクトの `CLAUDE.md` に以下�
 | `generate_pdfs_async` | 複数 PDF を一括非同期生成 → requestId を返す |
 | `download_file` | requestId + fileId でファイルをダウンロード |
 | `download_zip` | requestId で ZIP をダウンロード |
+| `suggest_params` | 自然文要件 + スキーマから params JSON を Sampling で生成 |
 
 ### 帳票生成の流れ
 
@@ -150,6 +183,13 @@ ReportFlow MCP サーバーを使うプロジェクトの `CLAUDE.md` に以下�
 2. `list_templates` でデザイン一覧を取得し、目的の `id`（designId）を確認
 3. `get_design_parameters` で `designId` と `version`（latestVersion）を指定してパラメータ構造を確認
 4. パラメータを埋めて `generate_pdf_sync` で PDF を生成
+
+または、`/generate_pdf` / `/generate_pdfs` スラッシュコマンドからレシピを受け取るとよりスムーズ。
+
+### Resources の活用
+
+- `reportflow://designs` や `reportflow://designs/{designId}/parameters` を Resource としてコンテキストに添付すれば、ツール呼び出しを加えずにテンプレを参照できます。
+- エラー判別に迷ったときは `reportflow://errors` を見るとメッセージカタログがあります。
 
 ### 注意事項
 
