@@ -35,6 +35,11 @@ import {
 import { registerPrompts } from './prompts/index.js';
 import { registerResources } from './resources/index.js';
 import { resolveDefaultOutputDir } from './roots/index.js';
+import {
+  telemetryClientFromEnv,
+  withTelemetry,
+  type TelemetryClient,
+} from './telemetry/index.js';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const pkg = require('../package.json') as { name: string; version: string };
@@ -44,12 +49,30 @@ const pkg = require('../package.json') as { name: string; version: string };
 const designIdSchema = z.string().describe('デザインID（UUID形式）');
 const versionSchema = z.number().int().describe('デザインバージョン番号');
 
-const contentDtoSchema = z.object({
+export const contentDtoSchema = z.object({
   fileName: z.string().describe('出力ファイル名（例: invoice.pdf）'),
   shareType: z
-    .enum(['private', 'public'])
-    .optional()
-    .describe('共有タイプ（省略時はprivate）'),
+    .union([
+      z
+        .literal('01')
+        .describe(
+          'ワークスペース内共有: 同一ワークスペースのメンバーのみアクセス可能（デフォルト）',
+        ),
+      z
+        .literal('02')
+        .describe(
+          '招待者共有: 招待されたメールアドレスを持つユーザーのみアクセス可能',
+        ),
+      z
+        .literal('03')
+        .describe(
+          '公開URL共有: URL を知る誰でもアクセス可能（オプションでパスコード保護）',
+        ),
+    ])
+    .default('01')
+    .describe(
+      "共有タイプ（数値コード）。省略時は '01'。レスポンスの share.shareType は 'workspace'/'invited'/'public' で返る。",
+    ),
   passcodeEnabled: z.boolean().optional().describe('パスコード保護の有効化'),
   params: z
     .record(z.unknown())
@@ -63,10 +86,22 @@ const outputDirSchema = z
     '出力先ディレクトリ (相対/絶対)。未指定時はクライアントのワークスペース (Roots) または現在の作業ディレクトリに保存。ユーザーが場所を指定した場合のみセットすること。',
   );
 
+const includePreviewSchema = z
+  .boolean()
+  .optional()
+  .describe(
+    'true 指定時のみ EmbeddedResource (application/pdf, base64 blob) を応答に含める。claude.ai は現状 PDF resource を inline 表示しないため、通常は省略 (false) で fileUrl のみを利用するのが効率的。',
+  );
+
 const singlePdfSchema = {
   designId: designIdSchema,
   version: versionSchema,
   content: contentDtoSchema.describe('PDF生成コンテンツ'),
+};
+
+const singlePdfSyncHttpSchema = {
+  ...singlePdfSchema,
+  includePreview: includePreviewSchema,
 };
 
 const multiplePdfSchema = {
@@ -81,6 +116,7 @@ const multiplePdfSchema = {
 const singlePdfSyncSchema = {
   ...singlePdfSchema,
   outputDir: outputDirSchema,
+  includePreview: includePreviewSchema,
 };
 
 const multiplePdfSyncSchema = {
@@ -92,24 +128,50 @@ const multiplePdfSyncSchema = {
     .describe('出力 ZIP のファイル名 (省略時は download.zip)'),
 };
 
-export const startServer = async (): Promise<void> => {
+export type CreateMcpServerOptions = {
+  /**
+   * stdio: ローカル CLI として動作。authenticate ツール (ブラウザ起動 + OS keychain 保存) を提供する。
+   * http: リモート HTTP サーバー。claude.ai 等の外部クライアントが OAuth を担うため、
+   *       authenticate ツールは登録しない (誤呼び出しで stdio 専用処理を走らせない)。
+   */
+  mode?: 'stdio' | 'http';
+  /**
+   * Telemetry client used to emit `integration.mcp.invoked` events. Defaults
+   * to a no-op when `TELEMETRY_ENDPOINT_URL` is unset. Override in tests.
+   */
+  telemetry?: TelemetryClient;
+};
+
+/**
+ * 全ツール / Prompts / Resources を登録した McpServer を生成して返す。
+ * Transport への接続は呼び出し側で行う（stdio: index.ts、HTTP: http-server.ts）。
+ */
+export const createMcpServer = (
+  opts: CreateMcpServerOptions = {},
+): McpServer => {
+  const mode = opts.mode ?? 'stdio';
+  const telemetry = opts.telemetry ?? telemetryClientFromEnv();
   const server = new McpServer({
     name: pkg.name,
     version: pkg.version,
   });
 
-  // authenticate (OAuth2 PKCE flow — call this first or when other tools error with auth)
-  server.tool(
-    authenticateTool.name,
-    authenticateTool.description,
-    {
-      force: z
-        .boolean()
-        .optional()
-        .describe('既存トークンを破棄して再認証する場合 true'),
-    },
-    async (input) => handleAuthenticate(input),
-  );
+  // authenticate (OAuth2 PKCE flow — stdio モードのみ提供)
+  if (mode === 'stdio') {
+    server.tool(
+      authenticateTool.name,
+      authenticateTool.description,
+      {
+        force: z
+          .boolean()
+          .optional()
+          .describe('既存トークンを破棄して再認証する場合 true'),
+      },
+      withTelemetry(telemetry, authenticateTool.name, async (input) =>
+        handleAuthenticate(input),
+      ),
+    );
+  }
 
   // get_design_parameters
   server.tool(
@@ -121,7 +183,9 @@ export const startServer = async (): Promise<void> => {
         .optional()
         .describe('バージョン番号（省略時は最新版）'),
     },
-    async (input) => handleGetDesignParameters(input),
+    withTelemetry(telemetry, getDesignParametersTool.name, async (input) =>
+      handleGetDesignParameters(input),
+    ),
   );
 
   // list_templates
@@ -129,80 +193,118 @@ export const startServer = async (): Promise<void> => {
     listTemplatesTool.name,
     listTemplatesTool.description,
     {},
-    async (input) => handleListTemplates(input),
+    withTelemetry(telemetry, listTemplatesTool.name, async (input) =>
+      handleListTemplates(input),
+    ),
   );
 
-  // generate_pdf_sync (Roots-aware)
-  server.tool(
-    generatePdfSyncTool.name,
-    generatePdfSyncTool.description,
-    singlePdfSyncSchema,
-    async (input) =>
-      handleGeneratePdfSync(input, {
-        resolveOutputDir: () => resolveDefaultOutputDir(server),
-      }),
-  );
+  // ─── generate_pdf_sync (両モード共通) ──────────────────────────────────
+  // HTTP モードでは EmbeddedResource (application/pdf, base64 blob) のみを返し、
+  // サーバー側 filesystem には保存しない (コンテナ内パスはクライアント不可達)。
+  // stdio モードでは従来通り Roots/outputDir に保存 + EmbeddedResource も併せて返す。
+  if (mode === 'stdio') {
+    server.tool(
+      generatePdfSyncTool.name,
+      generatePdfSyncTool.description,
+      singlePdfSyncSchema,
+      withTelemetry(telemetry, generatePdfSyncTool.name, async (input) =>
+        handleGeneratePdfSync(input, {
+          mode: 'stdio',
+          resolveOutputDir: () => resolveDefaultOutputDir(server),
+        }),
+      ),
+    );
+  } else {
+    // HTTP モード: outputDir は除外、代わりに includePreview を受け付ける
+    server.tool(
+      generatePdfSyncTool.name,
+      generatePdfSyncTool.description,
+      singlePdfSyncHttpSchema,
+      withTelemetry(telemetry, generatePdfSyncTool.name, async (input) =>
+        handleGeneratePdfSync(input, { mode: 'http' }),
+      ),
+    );
+  }
 
-  // generate_pdf_async
-  server.tool(
-    generatePdfAsyncTool.name,
-    generatePdfAsyncTool.description,
-    singlePdfSchema,
-    async (input) => handleGeneratePdfAsync(input),
-  );
+  // ─── 他の filesystem-writing tools は stdio モード専用 ──────────────────
+  // generate_pdfs_sync (ZIP) と download_* は claude.ai 等のリモートクライアントから
+  // プレビュー対象にならないため、HTTP モードでは async 版のみ提供する。
+  if (mode === 'stdio') {
+    // generate_pdfs_sync (Roots-aware)
+    server.tool(
+      generatePdfsSyncTool.name,
+      generatePdfsSyncTool.description,
+      multiplePdfSyncSchema,
+      withTelemetry(telemetry, generatePdfsSyncTool.name, async (input) =>
+        handleGeneratePdfsSync(input, {
+          resolveOutputDir: () => resolveDefaultOutputDir(server),
+        }),
+      ),
+    );
 
-  // generate_pdfs_sync (Roots-aware)
-  server.tool(
-    generatePdfsSyncTool.name,
-    generatePdfsSyncTool.description,
-    multiplePdfSyncSchema,
-    async (input) =>
-      handleGeneratePdfsSync(input, {
-        resolveOutputDir: () => resolveDefaultOutputDir(server),
-      }),
-  );
+    // download_file
+    server.tool(
+      downloadFileTool.name,
+      downloadFileTool.description,
+      {
+        requestId: z
+          .string()
+          .describe('generate_pdf_asyncで返されたrequestId（UUID）'),
+        fileId: z.string().describe('generate_pdf_asyncのfiles[].fileId'),
+        fileName: z
+          .string()
+          .optional()
+          .describe('保存ファイル名（省略時はfileId.pdf）'),
+        outputDir: outputDirSchema,
+      },
+      withTelemetry(telemetry, downloadFileTool.name, async (input) =>
+        handleDownloadFile(input),
+      ),
+    );
 
-  // generate_pdfs_async
+    // download_zip
+    server.tool(
+      downloadZipTool.name,
+      downloadZipTool.description,
+      {
+        requestId: z
+          .string()
+          .describe('generate_pdfs_asyncで返されたrequestId（UUID）'),
+        fileName: z
+          .string()
+          .optional()
+          .describe('保存ファイル名（省略時はrequestId.zip）'),
+        outputDir: outputDirSchema,
+      },
+      withTelemetry(telemetry, downloadZipTool.name, async (input) =>
+        handleDownloadZip(input),
+      ),
+    );
+
+    // generate_pdf_async は HTTP モードでは非公開化 (sync が data+fileUrl+fileId を
+    // 1 リクエストで返せるため、リモートクライアント側で async を呼び分ける合理性が
+    // 薄く、Claude がツール選択を誤る原因になる)。stdio モードでは Claude Desktop /
+    // Code 内のローカル開発で個別生成 → download_file の組み合わせを使うケースが
+    // あるため引き続き提供。
+    server.tool(
+      generatePdfAsyncTool.name,
+      generatePdfAsyncTool.description,
+      singlePdfSchema,
+      withTelemetry(telemetry, generatePdfAsyncTool.name, async (input) =>
+        handleGeneratePdfAsync(input),
+      ),
+    );
+  }
+
+  // generate_pdfs_async (両モード共通: 複数 PDF を非同期生成。
+  // 単数 sync では捌けない bulk 用途のため HTTP モードでも残す)
   server.tool(
     generatePdfsAsyncTool.name,
     generatePdfsAsyncTool.description,
     multiplePdfSchema,
-    async (input) => handleGeneratePdfsAsync(input),
-  );
-
-  // download_file
-  server.tool(
-    downloadFileTool.name,
-    downloadFileTool.description,
-    {
-      requestId: z
-        .string()
-        .describe('generate_pdf_asyncで返されたrequestId（UUID）'),
-      fileId: z.string().describe('generate_pdf_asyncのfiles[].fileId'),
-      fileName: z
-        .string()
-        .optional()
-        .describe('保存ファイル名（省略時はfileId.pdf）'),
-      outputDir: outputDirSchema,
-    },
-    async (input) => handleDownloadFile(input),
-  );
-
-  // download_zip
-  server.tool(
-    downloadZipTool.name,
-    downloadZipTool.description,
-    {
-      requestId: z
-        .string()
-        .describe('generate_pdfs_asyncで返されたrequestId（UUID）'),
-      fileName: z
-        .string()
-        .optional()
-        .describe('保存ファイル名（省略時はrequestId.zip）'),
-      outputDir: outputDirSchema,
-    },
-    async (input) => handleDownloadZip(input),
+    withTelemetry(telemetry, generatePdfsAsyncTool.name, async (input) =>
+      handleGeneratePdfsAsync(input),
+    ),
   );
 
   // suggest_params (Sampling-backed)
@@ -220,7 +322,9 @@ export const startServer = async (): Promise<void> => {
           '帳票の内容を自然文で記述（例: "請求書、宛先A社、合計1万円"）',
         ),
     },
-    async (input) => handleSuggestParams(server, input),
+    withTelemetry(telemetry, suggestParamsTool.name, async (input) =>
+      handleSuggestParams(server, input),
+    ),
   );
 
   // Prompts (recipe cards) & Resources (read-only data) — 各 register 関数が
@@ -228,6 +332,15 @@ export const startServer = async (): Promise<void> => {
   registerPrompts(server);
   registerResources(server, pkg);
 
+  return server;
+};
+
+/**
+ * stdio エントリ用の従来 API。createMcpServer() で生成したインスタンスを
+ * StdioServerTransport に connect する。HTTP モードはこの関数を使わない。
+ */
+export const startServer = async (): Promise<void> => {
+  const server = createMcpServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
 };

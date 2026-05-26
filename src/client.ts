@@ -1,9 +1,12 @@
-import { fetchJson, fetchBinary } from './http.js';
+import { fetchJson, fetchBinary, fetchBinaryWithHeaders } from './http.js';
 import { requestWithAuth } from './auth.js';
+import { REPORTFLOW_API_BASE_URL } from './config.js';
 import { saveTempFile } from './file-helper.js';
 
+// HTTP モード (claude.ai 等のリモート接続) では config.ts の固定 URL を使う。
+// stdio モードでは従来通り REPORTFLOW_API_BASE_URL env override も許容する。
 const getBaseUrl = () =>
-  process.env['REPORTFLOW_API_BASE_URL'] ?? 'https://api.re-port-flow.com';
+  process.env['REPORTFLOW_API_BASE_URL'] ?? REPORTFLOW_API_BASE_URL;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -16,15 +19,32 @@ export type GetDesignParametersResponse = Record<string, DesignParameter>;
 
 export type ContentParam = Record<string, unknown>;
 
+/**
+ * 共有タイプ (リクエスト側): 数値コード。
+ * - '01' = ワークスペース内共有 (デフォルト)
+ * - '02' = 招待者共有
+ * - '03' = 公開URL共有
+ *
+ * 参照: developer-docs/openapi/content-service.yaml shareType (request)
+ */
+export type ShareTypeCode = '01' | '02' | '03';
+
+/**
+ * 共有タイプ (レスポンス側): 人間可読な名前で返ってくる。
+ *
+ * 参照: developer-docs/openapi/content-service.yaml shareType (response)
+ */
+export type ShareTypeName = 'workspace' | 'invited' | 'public';
+
 export type ContentDto = {
   fileName: string;
-  shareType?: string;
+  shareType?: ShareTypeCode;
   passcodeEnabled?: boolean;
   params: ContentParam;
 };
 
 export type ShareInfo = {
-  shareType: string;
+  shareType: ShareTypeName;
   passcodeEnabled: boolean;
 };
 
@@ -71,22 +91,79 @@ export const getDesignParameters = async (
   );
 };
 
+/**
+ * generate_pdf_sync の結果。
+ * - data    : PDF バイト列 (EmbeddedResource 用)
+ * - filePath: stdio モードで saveTempFile した場合の絶対パス。HTTP モードでは undefined。
+ * - fileUrl : content-service の sync エンドポイントが返す `File-URL` ヘッダー。
+ *             ワークスペースのダウンロードエンドポイント URL (`{base}/file/download/{requestId}`)。
+ * - requestId: 同 `Request-Id` ヘッダー。
+ * - fileId  : 同 `X-File-Mapping` ヘッダー (URL encoded JSON 配列) の最初の要素の fileId。
+ *
+ * 参照: developer-docs/openapi/content-service.yaml
+ *   /v1/file/sync/single → 200 ヘッダー (File-URL / Request-Id / X-File-Mapping)
+ */
+export type GeneratePdfSyncResult = {
+  data: ArrayBuffer;
+  filePath?: string;
+  fileUrl?: string;
+  requestId?: string;
+  fileId?: string;
+};
+
+type FileMappingItem = {
+  fileId: string;
+  fileName: string;
+  share?: unknown;
+  passthrough?: unknown;
+};
+
+/**
+ * sync エンドポイントが返す `X-File-Mapping` ヘッダー (URL encoded JSON 配列) を
+ * パースして配列を返す。失敗時は空配列。
+ */
+const parseFileMapping = (raw: string | null): FileMappingItem[] => {
+  if (!raw) return [];
+  try {
+    const decoded = decodeURIComponent(raw);
+    const parsed = JSON.parse(decoded) as FileMappingItem[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
 export const generatePdfSync = async (body: {
   designId: string;
   version: number;
   content: ContentDto;
+  /**
+   * 指定された場合のみ saveTempFile してパスを返す (stdio モード用)。
+   * HTTP モードでは未指定にする — サーバ filesystem に書いてもクライアント不可達。
+   */
   outputDir?: string;
-}): Promise<string> => {
+  /** true なら outputDir 指定の有無に関わらず保存しない (HTTP モード) */
+  skipSave?: boolean;
+}): Promise<GeneratePdfSyncResult> => {
   const url = new URL('/v1/file/sync/single', getBaseUrl());
-  const { outputDir, ...payload } = body;
-  const data = await requestWithAuth((headers) =>
-    fetchBinary(url.toString(), {
+  const { outputDir, skipSave, ...payload } = body;
+  const { data, headers } = await requestWithAuth((headers) =>
+    fetchBinaryWithHeaders(url.toString(), {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     }),
   );
-  return saveTempFile(data, body.content.fileName, outputDir);
+
+  const fileUrl = headers.get('File-URL') ?? undefined;
+  const requestId = headers.get('Request-Id') ?? undefined;
+  const fileId = parseFileMapping(headers.get('X-File-Mapping'))[0]?.fileId;
+
+  if (skipSave) {
+    return { data, fileUrl, requestId, fileId };
+  }
+  const filePath = await saveTempFile(data, body.content.fileName, outputDir);
+  return { data, filePath, fileUrl, requestId, fileId };
 };
 
 export const generatePdfAsync = async (body: {

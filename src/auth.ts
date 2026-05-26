@@ -1,5 +1,6 @@
 import open from 'open';
 import { startCallbackServer } from './auth-server.js';
+import { getHttpAuthContext } from './auth-context.js';
 import { fetchJson, HttpError } from './http.js';
 import {
   generateCodeChallenge,
@@ -36,11 +37,15 @@ type JwtPayload = {
 };
 
 export class AuthRequiredError extends Error {
-  constructor(detail?: string) {
+  constructor(detail?: string, mode: 'stdio' | 'http' = 'stdio') {
+    const action =
+      mode === 'http'
+        ? 'クライアント側で OAuth トークンを再取得してください (claude.ai / n8n / Make 等の OAuth 設定を確認)'
+        : 'authenticate ツールを呼び出してください';
     super(
       detail
-        ? `再認証が必要です: ${detail}。authenticate ツールを呼び出してください。`
-        : '再認証が必要です。authenticate ツールを呼び出してください。',
+        ? `再認証が必要です: ${detail}。${action}。`
+        : `再認証が必要です。${action}。`,
     );
     this.name = 'AuthRequiredError';
   }
@@ -226,6 +231,11 @@ const loadOrRefresh = async (): Promise<TokenSet> => {
 };
 
 export const getAuthHeaders = async (): Promise<Record<string, string>> => {
+  // HTTP モード: AsyncLocalStorage に積まれた per-request token を優先利用する
+  const httpCtx = getHttpAuthContext();
+  if (httpCtx) {
+    return { Authorization: `Bearer ${httpCtx.accessToken}` };
+  }
   const tokens = await loadOrRefresh();
   return { Authorization: `Bearer ${tokens.accessToken}` };
 };
@@ -234,6 +244,21 @@ export const requestWithAuth = async <T>(
   fn: (headers: Record<string, string>) => Promise<T>,
 ): Promise<T> => {
   const headers = await getAuthHeaders();
+  // HTTP モードでは refresh は claude.ai 等の外部クライアントが担うため、
+  // 401 を受けた場合はそのまま AuthRequiredError として上位に返す。
+  const httpCtx = getHttpAuthContext();
+  if (httpCtx) {
+    try {
+      return await fn(headers);
+    } catch (err) {
+      if (err instanceof HttpError && err.status === 401) {
+        throw new AuthRequiredError('上流 API が 401', 'http');
+      }
+      throw err;
+    }
+  }
+
+  // stdio モード: 既存の OS keychain 経路 + ローカル refresh 再試行
   try {
     return await fn(headers);
   } catch (err) {
