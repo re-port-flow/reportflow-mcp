@@ -24,15 +24,3 @@ jobs:
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-  notify:
-    needs: publish
-    if: ${{ always() && needs.publish.result == 'failure' }}
-    uses: ./.github/workflows/notify_slack.yml
-    with:
-      title: "npm publish 失敗"
-      details: "バージョン: ${{ github.event.release.tag_name }} / 実行番号: ${{ github.run_id }}"
-      severity: "error"
-    secrets:
-      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}

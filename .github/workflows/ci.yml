@@ -43,14 +43,14 @@ jobs:
       - name: Run Tests
         run: yarn test --silent
 
-  notify:
-    needs: [lint, test]
-    if: ${{ always() && (needs.lint.result == 'failure' || needs.test.result == 'failure') }}
-    uses: ./.github/workflows/notify_slack.yml
-    with:
-      title: "CI失敗"
-      details: "リポジトリ: ${{ github.repository }} / 実行番号: ${{ github.run_id }}"
-      severity: "error"
-    secrets:
-      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure no infra/secret files are tracked
+        run: |
+          hits=$(git ls-files | grep -E '(^\.aws/|(^|/)Dockerfile$|(^|/)deploy\.ya?ml$|^app/|(^|/)\.env$)' || true)
+          if [ -n "$hits" ]; then
+            echo "::error::Infra/secret files must never exist in the public repo:"; echo "$hits"; exit 1
+          fi
+          echo "guard passed: no infra/secret files tracked"
