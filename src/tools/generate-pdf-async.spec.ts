@@ -25,14 +25,24 @@ describe('handleGeneratePdfAsync', () => {
   const input = {
     designId: 'design-uuid-1',
     version: 1,
-    content: { fileName: 'invoice.pdf', params: { name: '山田太郎', amount: 10000 } },
+    content: {
+      fileName: 'invoice.pdf',
+      params: { name: '山田太郎', amount: 10000 },
+    },
   };
 
   it('正常系: requestIdとfiles情報を返す', async () => {
     const mockData = {
       requestId: 'req-uuid-1',
       url: 'https://example.com/download/req-uuid-1',
-      files: [{ fileName: 'invoice.pdf', fileId: 'file-uuid-1', params: { name: '山田太郎', amount: 10000 }, share: { shareType: 'private', passcodeEnabled: false } }],
+      files: [
+        {
+          fileName: 'invoice.pdf',
+          fileId: 'file-uuid-1',
+          params: { name: '山田太郎', amount: 10000 },
+          share: { shareType: 'workspace', passcodeEnabled: false },
+        },
+      ],
     };
     mockJsonResponse(mockData);
 

@@ -70,6 +70,22 @@ export async function fetchBinary(
   url: string,
   init: RequestInit & { timeoutMs?: number } = {},
 ): Promise<ArrayBuffer> {
+  const { data } = await fetchBinaryWithHeaders(url, init);
+  return data;
+}
+
+/**
+ * fetchBinary の拡張版。レスポンスヘッダーも返す。
+ * content-service の sync エンドポイントが返す
+ * `File-URL` / `Request-Id` / `X-File-Mapping` 等を読むために使う。
+ *
+ * 参照: developer-docs/openapi/content-service.yaml
+ *   /v1/file/sync/single → 200 with headers (File-URL, Request-Id, X-File-Mapping)
+ */
+export async function fetchBinaryWithHeaders(
+  url: string,
+  init: RequestInit & { timeoutMs?: number } = {},
+): Promise<{ data: ArrayBuffer; headers: Headers }> {
   const { timeoutMs = DEFAULT_TIMEOUT_MS, signal, ...rest } = init;
   const [timeoutSignal, clearTimer] = withTimeout(signal, timeoutMs);
   try {
@@ -78,7 +94,8 @@ export async function fetchBinary(
       const msg = await parseErrorMessage(res);
       throw new HttpError(res.status, `[${res.status}] ${msg}`);
     }
-    return await res.arrayBuffer();
+    const data = await res.arrayBuffer();
+    return { data, headers: res.headers };
   } finally {
     clearTimer();
   }

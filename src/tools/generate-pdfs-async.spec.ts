@@ -36,8 +36,18 @@ describe('handleGeneratePdfsAsync', () => {
       requestId: 'req-uuid-2',
       url: 'https://example.com/download/req-uuid-2',
       files: [
-        { fileName: 'invoice1.pdf', fileId: 'file-uuid-1', params: { name: '山田太郎' }, share: { shareType: 'private', passcodeEnabled: false } },
-        { fileName: 'invoice2.pdf', fileId: 'file-uuid-2', params: { name: '鈴木次郎' }, share: { shareType: 'private', passcodeEnabled: false } },
+        {
+          fileName: 'invoice1.pdf',
+          fileId: 'file-uuid-1',
+          params: { name: '山田太郎' },
+          share: { shareType: 'workspace', passcodeEnabled: false },
+        },
+        {
+          fileName: 'invoice2.pdf',
+          fileId: 'file-uuid-2',
+          params: { name: '鈴木次郎' },
+          share: { shareType: 'workspace', passcodeEnabled: false },
+        },
       ],
     };
     mockJsonResponse(mockData);
