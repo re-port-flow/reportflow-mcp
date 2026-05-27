@@ -8,13 +8,13 @@
     "url": "https://github.com/re-port-flow/reportflow-mcp",
     "source": "github"
   },
-  "version": "1.2.0",
+  "version": "1.2.1",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "reportflow-mcp",
-      "version": "1.2.0",
+      "version": "1.2.1",
       "transport": {
         "type": "stdio"
       },
