@@ -109,6 +109,7 @@ describe('handleGeneratePdfSync', () => {
         expect.any(ArrayBuffer),
         'invoice.pdf',
         undefined,
+        [],
       );
 
       const text = findText(result.content as ContentItem[]);
@@ -154,7 +155,50 @@ describe('handleGeneratePdfSync', () => {
         expect.any(ArrayBuffer),
         'invoice.pdf',
         '/roots',
+        [],
       );
+    });
+
+    it('明示 outputDir 指定時は resolveAllowedRoots を呼び結果を saveTempFile に渡す (PRJ-3-485 wiring)', async () => {
+      mockBinaryResponse();
+      mockedFileHelper.saveTempFile.mockResolvedValue(
+        '/home/user/workspace/invoice.pdf',
+      );
+      const resolveAllowedRoots = jest
+        .fn<Promise<string[]>, []>()
+        .mockResolvedValue(['/home/user/workspace']);
+
+      await handleGeneratePdfSync(
+        { ...input, outputDir: '/home/user/workspace' },
+        {
+          mode: 'stdio',
+          resolveOutputDir: async () => '/should-be-overridden',
+          resolveAllowedRoots,
+        },
+      );
+
+      expect(resolveAllowedRoots).toHaveBeenCalledTimes(1);
+      expect(mockedFileHelper.saveTempFile).toHaveBeenCalledWith(
+        expect.any(ArrayBuffer),
+        'invoice.pdf',
+        '/home/user/workspace',
+        ['/home/user/workspace'],
+      );
+    });
+
+    it('outputDir 未指定時は resolveAllowedRoots を呼ばない (検証対象が無い)', async () => {
+      mockBinaryResponse();
+      const resolveAllowedRoots = jest
+        .fn<Promise<string[]>, []>()
+        .mockResolvedValue(['/roots']);
+
+      await handleGeneratePdfSync(input, {
+        mode: 'stdio',
+        resolveOutputDir: async () => '/roots',
+        resolveAllowedRoots,
+      });
+
+      expect(resolveAllowedRoots).not.toHaveBeenCalled();
     });
 
     it('空白を含むパスでも RFC 8089 準拠の file URI を返す (preview ON 時)', async () => {

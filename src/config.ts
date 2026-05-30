@@ -2,7 +2,7 @@
  * 環境別の固定 URL 定数。
  * `NODE_ENV=staging` のときだけステージング、それ以外は本番扱い。
  * stdio 版 (npx で起動、NODE_ENV 未設定) が誤ってステージングを引かないよう、
- * staging を opt-in 方式にしている。HTTP モードでは NODE_ENV 環境変数で動作を切り替える。
+ * staging を opt-in 方式にしている。HTTP 版は ECS Task Definition で NODE_ENV を渡す。
  * 値は外部 env から差し替え不可。
  */
 

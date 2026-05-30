@@ -29,10 +29,16 @@ describe('handleDownloadFile', () => {
     mockBinaryResponse(Buffer.from('PDF_CONTENT').buffer);
     mockedFileHelper.saveTempFile.mockResolvedValue('/tmp/invoice.pdf');
 
-    const result = await handleDownloadFile({ requestId: 'req-uuid-1', fileId: 'file-uuid-1', fileName: 'invoice.pdf' });
+    const result = await handleDownloadFile({
+      requestId: 'req-uuid-1',
+      fileId: 'file-uuid-1',
+      fileName: 'invoice.pdf',
+    });
 
     expect(result.isError).toBeUndefined();
-    expect(JSON.parse(result.content[0].text).filePath).toBe('/tmp/invoice.pdf');
+    expect(JSON.parse(result.content[0].text).filePath).toBe(
+      '/tmp/invoice.pdf',
+    );
     expect(mockFetch.mock.calls[0][0]).toContain('req-uuid-1/file-uuid-1');
   });
 
@@ -40,16 +46,27 @@ describe('handleDownloadFile', () => {
     mockBinaryResponse(Buffer.from('').buffer);
     mockedFileHelper.saveTempFile.mockResolvedValue('/tmp/file-uuid-1.pdf');
 
-    const result = await handleDownloadFile({ requestId: 'req-uuid-1', fileId: 'file-uuid-1' });
+    const result = await handleDownloadFile({
+      requestId: 'req-uuid-1',
+      fileId: 'file-uuid-1',
+    });
 
     expect(result.isError).toBeUndefined();
-    expect(mockedFileHelper.saveTempFile).toHaveBeenCalledWith(expect.any(ArrayBuffer), 'file-uuid-1.pdf', undefined);
+    expect(mockedFileHelper.saveTempFile).toHaveBeenCalledWith(
+      expect.any(ArrayBuffer),
+      'file-uuid-1.pdf',
+      undefined,
+      [],
+    );
   });
 
   it('エラー系: APIエラー時にisError=trueを返す', async () => {
     mockFetch.mockRejectedValue(new Error('Not Found'));
 
-    const result = await handleDownloadFile({ requestId: 'req-uuid-1', fileId: 'file-uuid-1' });
+    const result = await handleDownloadFile({
+      requestId: 'req-uuid-1',
+      fileId: 'file-uuid-1',
+    });
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('エラー: Not Found');

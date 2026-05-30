@@ -3,7 +3,6 @@ import {
   type McpServer,
 } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { getDesignParameters, listDesigns } from '../client.js';
-import { AuthRequiredError } from '../auth.js';
 import type { ResourceReadResult } from './designs.js';
 
 export const DESIGN_PARAMETERS_URI_TEMPLATE =
@@ -31,12 +30,7 @@ export const readDesignParameters = async (
 };
 
 export const listDesignParameterResources = async () => {
-  // 未認証時 (Glama などの introspection) は resources/list を失敗させず空で返す。
-  // 認証済みであれば従来どおりワークスペースのデザインを列挙する。
-  const { designs } = await listDesigns().catch((err: unknown) => {
-    if (err instanceof AuthRequiredError) return { designs: [] };
-    throw err;
-  });
+  const { designs } = await listDesigns();
   return {
     resources: designs.map((d) => ({
       uri: `reportflow://designs/${d.id}/parameters`,

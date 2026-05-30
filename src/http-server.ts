@@ -289,7 +289,7 @@ export const buildHttpApp = (): express.Express => {
 };
 
 /**
- * HTTP サーバーモードのエントリポイント
+ * Express を listen するエントリ。Docker / ECS Fargate からの起動を想定。
  * `listen` 成功 (listening イベント) または bind エラー (EADDRINUSE 等) で
  * Promise が settle する。呼び出し側でエラーハンドリング可能。
  */

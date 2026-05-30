@@ -29,10 +29,15 @@ describe('handleDownloadZip', () => {
     mockBinaryResponse(Buffer.from('ZIP_CONTENT').buffer);
     mockedFileHelper.saveTempFile.mockResolvedValue('/tmp/invoices.zip');
 
-    const result = await handleDownloadZip({ requestId: 'req-uuid-1', fileName: 'invoices.zip' });
+    const result = await handleDownloadZip({
+      requestId: 'req-uuid-1',
+      fileName: 'invoices.zip',
+    });
 
     expect(result.isError).toBeUndefined();
-    expect(JSON.parse(result.content[0].text).filePath).toBe('/tmp/invoices.zip');
+    expect(JSON.parse(result.content[0].text).filePath).toBe(
+      '/tmp/invoices.zip',
+    );
     expect(mockFetch.mock.calls[0][0]).toContain('/download/req-uuid-1');
     expect(mockFetch.mock.calls[0][0]).not.toContain('file-uuid');
   });
@@ -44,7 +49,12 @@ describe('handleDownloadZip', () => {
     const result = await handleDownloadZip({ requestId: 'req-uuid-1' });
 
     expect(result.isError).toBeUndefined();
-    expect(mockedFileHelper.saveTempFile).toHaveBeenCalledWith(expect.any(ArrayBuffer), 'req-uuid-1.zip', undefined);
+    expect(mockedFileHelper.saveTempFile).toHaveBeenCalledWith(
+      expect.any(ArrayBuffer),
+      'req-uuid-1.zip',
+      undefined,
+      [],
+    );
   });
 
   it('エラー系: APIエラー時にisError=trueを返す', async () => {

@@ -18,15 +18,26 @@ export type DownloadFileResult = {
   isError?: true;
 };
 
+export type DownloadFileDeps = {
+  /** 明示 `outputDir` 指定時の許可ルート集合解決。詳細は generate-pdf-sync.ts を参照。 */
+  resolveAllowedRoots?: () => Promise<string[]>;
+};
+
 export const handleDownloadFile = async (
   input: DownloadFileInput,
+  deps: DownloadFileDeps = {},
 ): Promise<DownloadFileResult> => {
   try {
+    const allowedRoots =
+      input.outputDir != null && deps.resolveAllowedRoots
+        ? await deps.resolveAllowedRoots()
+        : undefined;
     const filePath = await downloadFile(
       input.requestId,
       input.fileId,
       input.fileName,
       input.outputDir,
+      allowedRoots,
     );
     return {
       content: [
