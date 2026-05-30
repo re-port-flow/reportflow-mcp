@@ -32,6 +32,15 @@ export type GeneratePdfSyncDeps = {
    * server.ts で Roots を見てデフォルトディレクトリを返すために使う。
    */
   resolveOutputDir?: () => Promise<string | undefined>;
+  /**
+   * 明示 `outputDir` 指定時に「ここから外には書かない」と検証するための許可ルート集合
+   * (stdio モード専用)。MCP Roots がある場合はそれを、無い場合は `os.tmpdir()/reportflow`
+   * を返す `resolveAllowedRoots(server)` を server.ts でバインドして渡す。
+   *
+   * 未指定なら client.ts → safe-paths.ts のフォールバック (`DEFAULT_FALLBACK_DIR`) が
+   * 使われる。テストや非 MCP 経路では未指定で OK。
+   */
+  resolveAllowedRoots?: () => Promise<string[]>;
 };
 
 type TextContent = { type: 'text'; text: string };
@@ -104,6 +113,12 @@ export const handleGeneratePdfSync = async (
       mode === 'http'
         ? undefined
         : (input.outputDir ?? (await deps.resolveOutputDir?.()));
+    // 明示 outputDir があるときだけ allowedRoots を解決する (デフォルト fallback 経路では
+    // resolveAllowedRoots を呼ぶ意味がない: outputDir 未指定なら検証対象が無い)。
+    const allowedRoots =
+      mode !== 'http' && input.outputDir != null && deps.resolveAllowedRoots
+        ? await deps.resolveAllowedRoots()
+        : undefined;
     const { data, filePath, fileUrl, requestId, fileId } =
       await generatePdfSync({
         designId: input.designId,
@@ -111,6 +126,7 @@ export const handleGeneratePdfSync = async (
         content: input.content,
         outputDir,
         skipSave: mode === 'http',
+        allowedRoots,
       });
 
     // ─── text content ───────────────────────────────────────────────────

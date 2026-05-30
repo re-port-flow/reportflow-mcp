@@ -34,7 +34,7 @@ import {
 } from './tools/suggest-params.js';
 import { registerPrompts } from './prompts/index.js';
 import { registerResources } from './resources/index.js';
-import { resolveDefaultOutputDir } from './roots/index.js';
+import { resolveDefaultOutputDir, resolveAllowedRoots } from './roots/index.js';
 import {
   telemetryClientFromEnv,
   withTelemetry,
@@ -167,6 +167,11 @@ export const createMcpServer = (
           .optional()
           .describe('既存トークンを破棄して再認証する場合 true'),
       },
+      {
+        title: 'Authenticate with ReportFlow',
+        openWorldHint: true,
+        destructiveHint: false,
+      },
       withTelemetry(telemetry, authenticateTool.name, async (input) =>
         handleAuthenticate(input),
       ),
@@ -183,6 +188,11 @@ export const createMcpServer = (
         .optional()
         .describe('バージョン番号（省略時は最新版）'),
     },
+    {
+      title: 'Get Template Parameters',
+      readOnlyHint: true,
+      idempotentHint: true,
+    },
     withTelemetry(telemetry, getDesignParametersTool.name, async (input) =>
       handleGetDesignParameters(input),
     ),
@@ -193,6 +203,11 @@ export const createMcpServer = (
     listTemplatesTool.name,
     listTemplatesTool.description,
     {},
+    {
+      title: 'List ReportFlow Templates',
+      readOnlyHint: true,
+      idempotentHint: true,
+    },
     withTelemetry(telemetry, listTemplatesTool.name, async (input) =>
       handleListTemplates(input),
     ),
@@ -207,10 +222,17 @@ export const createMcpServer = (
       generatePdfSyncTool.name,
       generatePdfSyncTool.description,
       singlePdfSyncSchema,
+      {
+        title: 'Generate PDF (sync)',
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+      },
       withTelemetry(telemetry, generatePdfSyncTool.name, async (input) =>
         handleGeneratePdfSync(input, {
           mode: 'stdio',
           resolveOutputDir: () => resolveDefaultOutputDir(server),
+          resolveAllowedRoots: () => resolveAllowedRoots(server),
         }),
       ),
     );
@@ -220,6 +242,12 @@ export const createMcpServer = (
       generatePdfSyncTool.name,
       generatePdfSyncTool.description,
       singlePdfSyncHttpSchema,
+      {
+        title: 'Generate PDF (sync)',
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+      },
       withTelemetry(telemetry, generatePdfSyncTool.name, async (input) =>
         handleGeneratePdfSync(input, { mode: 'http' }),
       ),
@@ -235,9 +263,16 @@ export const createMcpServer = (
       generatePdfsSyncTool.name,
       generatePdfsSyncTool.description,
       multiplePdfSyncSchema,
+      {
+        title: 'Generate Multiple PDFs (sync)',
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+      },
       withTelemetry(telemetry, generatePdfsSyncTool.name, async (input) =>
         handleGeneratePdfsSync(input, {
           resolveOutputDir: () => resolveDefaultOutputDir(server),
+          resolveAllowedRoots: () => resolveAllowedRoots(server),
         }),
       ),
     );
@@ -257,8 +292,18 @@ export const createMcpServer = (
           .describe('保存ファイル名（省略時はfileId.pdf）'),
         outputDir: outputDirSchema,
       },
+      {
+        title: 'Download Generated File',
+        // Writes the downloaded PDF to disk (saveTempFile → fs.writeFile)
+        // under outputDir or cwd, so NOT read-only despite "download" naming.
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+      },
       withTelemetry(telemetry, downloadFileTool.name, async (input) =>
-        handleDownloadFile(input),
+        handleDownloadFile(input, {
+          resolveAllowedRoots: () => resolveAllowedRoots(server),
+        }),
       ),
     );
 
@@ -276,8 +321,18 @@ export const createMcpServer = (
           .describe('保存ファイル名（省略時はrequestId.zip）'),
         outputDir: outputDirSchema,
       },
+      {
+        title: 'Download Batch ZIP',
+        // Writes the batch ZIP to disk under outputDir or cwd
+        // (same rationale as download_file).
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+      },
       withTelemetry(telemetry, downloadZipTool.name, async (input) =>
-        handleDownloadZip(input),
+        handleDownloadZip(input, {
+          resolveAllowedRoots: () => resolveAllowedRoots(server),
+        }),
       ),
     );
 
@@ -290,6 +345,12 @@ export const createMcpServer = (
       generatePdfAsyncTool.name,
       generatePdfAsyncTool.description,
       singlePdfSchema,
+      {
+        title: 'Generate PDF (async)',
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+      },
       withTelemetry(telemetry, generatePdfAsyncTool.name, async (input) =>
         handleGeneratePdfAsync(input),
       ),
@@ -302,6 +363,12 @@ export const createMcpServer = (
     generatePdfsAsyncTool.name,
     generatePdfsAsyncTool.description,
     multiplePdfSchema,
+    {
+      title: 'Generate Multiple PDFs (async)',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+    },
     withTelemetry(telemetry, generatePdfsAsyncTool.name, async (input) =>
       handleGeneratePdfsAsync(input),
     ),
@@ -321,6 +388,10 @@ export const createMcpServer = (
         .describe(
           '帳票の内容を自然文で記述（例: "請求書、宛先A社、合計1万円"）',
         ),
+    },
+    {
+      title: 'Suggest Parameters via Sampling',
+      readOnlyHint: true,
     },
     withTelemetry(telemetry, suggestParamsTool.name, async (input) =>
       handleSuggestParams(server, input),

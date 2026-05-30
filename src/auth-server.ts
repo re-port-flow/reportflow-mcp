@@ -11,6 +11,9 @@ export type StartCallbackServerOptions = {
   expectedState: string;
   timeoutMs?: number;
   successHtml?: string;
+  // Fires once the server is listening with the actually-bound port. Useful
+  // when `port: 0` is passed and the caller needs to know the OS-assigned port.
+  onListening?: (port: number) => void;
 };
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
@@ -151,7 +154,9 @@ export const startCallbackServer = (
       const addr = server.address() as AddressInfo | null;
       if (addr == null) {
         finish(new Error('Failed to bind callback server'));
+        return;
       }
+      options.onListening?.(addr.port);
     });
   });
 };

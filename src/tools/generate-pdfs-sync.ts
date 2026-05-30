@@ -16,6 +16,10 @@ export type GeneratePdfsSyncInput = {
 
 export type GeneratePdfsSyncDeps = {
   resolveOutputDir?: () => Promise<string | undefined>;
+  /**
+   * 明示 `outputDir` 指定時の許可ルート集合解決。詳細は generate-pdf-sync.ts を参照。
+   */
+  resolveAllowedRoots?: () => Promise<string[]>;
 };
 
 export type GeneratePdfsSyncResult = {
@@ -29,7 +33,15 @@ export const handleGeneratePdfsSync = async (
 ): Promise<GeneratePdfsSyncResult> => {
   try {
     const outputDir = input.outputDir ?? (await deps.resolveOutputDir?.());
-    const filePath = await generatePdfsSync({ ...input, outputDir });
+    const allowedRoots =
+      input.outputDir != null && deps.resolveAllowedRoots
+        ? await deps.resolveAllowedRoots()
+        : undefined;
+    const filePath = await generatePdfsSync({
+      ...input,
+      outputDir,
+      allowedRoots,
+    });
     return {
       content: [
         {

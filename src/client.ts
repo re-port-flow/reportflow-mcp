@@ -144,9 +144,15 @@ export const generatePdfSync = async (body: {
   outputDir?: string;
   /** true なら outputDir 指定の有無に関わらず保存しない (HTTP モード) */
   skipSave?: boolean;
+  /**
+   * `outputDir` を許可するルート集合 (MCP Roots 由来)。`saveTempFile` で
+   * 検証に使う。stdio モードの呼び出し側 (server.ts) で `resolveAllowedRoots`
+   * の結果を渡す。未指定なら `safe-paths.ts` の安全なデフォルトにフォールバック。
+   */
+  allowedRoots?: string[];
 }): Promise<GeneratePdfSyncResult> => {
   const url = new URL('/v1/file/sync/single', getBaseUrl());
-  const { outputDir, skipSave, ...payload } = body;
+  const { outputDir, skipSave, allowedRoots, ...payload } = body;
   const { data, headers } = await requestWithAuth((headers) =>
     fetchBinaryWithHeaders(url.toString(), {
       method: 'POST',
@@ -162,7 +168,12 @@ export const generatePdfSync = async (body: {
   if (skipSave) {
     return { data, fileUrl, requestId, fileId };
   }
-  const filePath = await saveTempFile(data, body.content.fileName, outputDir);
+  const filePath = await saveTempFile(
+    data,
+    body.content.fileName,
+    outputDir,
+    allowedRoots ?? [],
+  );
   return { data, filePath, fileUrl, requestId, fileId };
 };
 
@@ -187,9 +198,11 @@ export const generatePdfsSync = async (body: {
   contents: ContentDto[];
   outputDir?: string;
   zipFileName?: string;
+  /** `outputDir` を許可するルート集合 (MCP Roots 由来)。`saveTempFile` で検証に使う。 */
+  allowedRoots?: string[];
 }): Promise<string> => {
   const url = new URL('/v1/file/sync/multiple', getBaseUrl());
-  const { outputDir, zipFileName, ...payload } = body;
+  const { outputDir, zipFileName, allowedRoots, ...payload } = body;
   const data = await requestWithAuth((headers) =>
     fetchBinary(url.toString(), {
       method: 'POST',
@@ -197,7 +210,12 @@ export const generatePdfsSync = async (body: {
       body: JSON.stringify(payload),
     }),
   );
-  return saveTempFile(data, zipFileName ?? 'download.zip', outputDir);
+  return saveTempFile(
+    data,
+    zipFileName ?? 'download.zip',
+    outputDir,
+    allowedRoots ?? [],
+  );
 };
 
 export const generatePdfsAsync = async (body: {
@@ -220,24 +238,36 @@ export const downloadFile = async (
   fileId: string,
   fileName?: string,
   outputDir?: string,
+  allowedRoots?: string[],
 ): Promise<string> => {
   const url = new URL(`/v1/file/download/${requestId}/${fileId}`, getBaseUrl());
   const data = await requestWithAuth((headers) =>
     fetchBinary(url.toString(), { headers }),
   );
-  return saveTempFile(data, fileName ?? `${fileId}.pdf`, outputDir);
+  return saveTempFile(
+    data,
+    fileName ?? `${fileId}.pdf`,
+    outputDir,
+    allowedRoots ?? [],
+  );
 };
 
 export const downloadZip = async (
   requestId: string,
   fileName?: string,
   outputDir?: string,
+  allowedRoots?: string[],
 ): Promise<string> => {
   const url = new URL(`/v1/file/download/${requestId}`, getBaseUrl());
   const data = await requestWithAuth((headers) =>
     fetchBinary(url.toString(), { headers }),
   );
-  return saveTempFile(data, fileName ?? `${requestId}.zip`, outputDir);
+  return saveTempFile(
+    data,
+    fileName ?? `${requestId}.zip`,
+    outputDir,
+    allowedRoots ?? [],
+  );
 };
 
 export const listDesigns = async (): Promise<DesignListResponse> => {
