@@ -8,6 +8,7 @@ import {
   listDesignParameterResources,
 } from './design-parameters.js';
 import { getDesignParameters, listDesigns } from '../client.js';
+import { AuthRequiredError } from '../auth.js';
 
 const mockGet = getDesignParameters as jest.MockedFunction<
   typeof getDesignParameters
@@ -69,5 +70,11 @@ describe('listDesignParameterResources', () => {
     );
     expect(result.resources[0].name).toContain('請求書');
     expect(result.resources[0].name).toContain('v2');
+  });
+
+  it('returns empty resources when unauthenticated (AuthRequiredError)', async () => {
+    mockList.mockRejectedValueOnce(new AuthRequiredError('トークン未保存'));
+    const result = await listDesignParameterResources();
+    expect(result.resources).toEqual([]);
   });
 });

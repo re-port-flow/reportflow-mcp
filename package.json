@@ -1,6 +1,6 @@
 {
   "name": "reportflow-mcp",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "mcpName": "io.github.re-port-flow/reportflow-mcp",
   "description": "ReportFlow MCP Server - PDF report generation for Claude and AI agents",
   "keywords": [
