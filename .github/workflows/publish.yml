@@ -1,15 +1,26 @@
-name: Publish to npm
+name: Publish (npm + MCP Registry)
 
 on:
   release:
     types: [published]
+  # Manual run: skips npm publish and (re)publishes the current server.json
+  # version to the MCP Registry. Use to backfill when the registry has fallen
+  # behind npm (e.g. after releases that predate this workflow).
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write # required for `mcp-publisher login github-oidc`
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # --- npm publish (release events only) ---
       - name: Setup Node v20
+        if: github.event_name == 'release'
         uses: actions/setup-node@v4
         with:
           node-version: "20.x"
@@ -17,10 +28,23 @@ jobs:
           cache: "yarn"
           cache-dependency-path: "./yarn.lock"
       - name: Install modules
+        if: github.event_name == 'release'
         run: yarn install --frozen-lockfile
       - name: Build
+        if: github.event_name == 'release'
         run: yarn build
-      - name: Publish
+      - name: Publish to npm
+        if: github.event_name == 'release'
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # --- MCP Registry publish (runs after npm publish; registry is a
+      #     metaregistry and requires the npm package to already exist) ---
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+      - name: Login to MCP Registry (GitHub OIDC)
+        run: ./mcp-publisher login github-oidc
+      - name: Publish server.json to MCP Registry
+        run: ./mcp-publisher publish
