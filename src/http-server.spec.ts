@@ -185,6 +185,11 @@ describe('http-server', () => {
       expect(res.status).not.toBe(401);
       expect(res.status).not.toBe(404);
     });
+
+    it('SSE でない GET / は (サーバ生成前に) 404 で弾く', async () => {
+      const res = await request(app).get('/').expect(404);
+      expect(res.body).toEqual({ error: 'not_found' });
+    });
   });
 
   describe('CORS', () => {

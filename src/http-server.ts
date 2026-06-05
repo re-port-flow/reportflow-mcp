@@ -242,6 +242,17 @@ export const buildHttpApp = (): express.Express => {
   // エンドポイントとみなしてルートへ initialize を POST するため、ルートにも
   // 同じハンドラを置いて 404 を防ぐ。OAuth セマンティクス (resource/audience) は不変。
   const handleMcp = (req: Request, res: Response): void => {
+    // 有効な MCP リクエストは POST (JSON-RPC) か SSE 用 GET (Accept: text/event-stream) のみ。
+    // ルート '/' はクローラー/ボット/ヘルスチェックの GET を無差別に受けるため、サーバ/transport
+    // を生成する前に早期 404 で弾き、リクエスト毎の McpServer 生成によるリソース枯渇 (DoS) を防ぐ。
+    const isSseGet =
+      req.method === 'GET' &&
+      (req.headers.accept ?? '').includes('text/event-stream');
+    if (req.method !== 'POST' && !isSseGet) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+
     const token = extractBearer(req);
     const needsAuth = requestNeedsAuth(req.body);
 
