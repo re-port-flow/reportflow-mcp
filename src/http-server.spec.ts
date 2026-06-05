@@ -153,6 +153,45 @@ describe('http-server', () => {
     });
   });
 
+  describe('POST / (ルート) も MCP ハンドラとして応答する', () => {
+    it('保護対象メソッドを Bearer 無しで叩くと 401 (ルートでも /mcp と同じガード)', async () => {
+      const res = await request(app)
+        .post('/')
+        .set('Accept', 'application/json, text/event-stream')
+        .send({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'list_templates', arguments: {} },
+        })
+        .expect(401);
+      expect(res.body.error).toBe('invalid_token');
+    });
+
+    it('非保護メソッド (initialize) は 401 にも 404 にもしない', async () => {
+      const res = await request(app)
+        .post('/')
+        .set('Accept', 'application/json, text/event-stream')
+        .send({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: {
+            protocolVersion: '2025-06-18',
+            capabilities: {},
+            clientInfo: { name: 'test', version: '0.0.0' },
+          },
+        });
+      expect(res.status).not.toBe(401);
+      expect(res.status).not.toBe(404);
+    });
+
+    it('SSE でない GET / は (サーバ生成前に) 404 で弾く', async () => {
+      const res = await request(app).get('/').expect(404);
+      expect(res.body).toEqual({ error: 'not_found' });
+    });
+  });
+
   describe('CORS', () => {
     it('OPTIONS で許可ヘッダが返る', async () => {
       const res = await request(app)

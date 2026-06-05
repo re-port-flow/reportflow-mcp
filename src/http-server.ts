@@ -236,7 +236,23 @@ export const buildHttpApp = (): express.Express => {
     });
   });
 
-  app.all('/mcp', (req: Request, res: Response) => {
+  // MCP Streamable HTTP ハンドラ。'/mcp' と '/' の両方に登録する。
+  // PRM が広告する resource はルート (https://mcp.re-port-flow.com) であり、
+  // RFC 9728 準拠の厳格なクライアント (Smithery / Glama 等) は resource を
+  // エンドポイントとみなしてルートへ initialize を POST するため、ルートにも
+  // 同じハンドラを置いて 404 を防ぐ。OAuth セマンティクス (resource/audience) は不変。
+  const handleMcp = (req: Request, res: Response): void => {
+    // 有効な MCP リクエストは POST (JSON-RPC) か SSE 用 GET (Accept: text/event-stream) のみ。
+    // ルート '/' はクローラー/ボット/ヘルスチェックの GET を無差別に受けるため、サーバ/transport
+    // を生成する前に早期 404 で弾き、リクエスト毎の McpServer 生成によるリソース枯渇 (DoS) を防ぐ。
+    const isSseGet =
+      req.method === 'GET' &&
+      (req.headers.accept ?? '').includes('text/event-stream');
+    if (req.method !== 'POST' && !isSseGet) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+
     const token = extractBearer(req);
     const needsAuth = requestNeedsAuth(req.body);
 
@@ -278,7 +294,9 @@ export const buildHttpApp = (): express.Express => {
         });
       }
     });
-  });
+  };
+  app.all('/mcp', handleMcp);
+  app.all('/', handleMcp);
 
   // 404 for any other path
   app.use((_req: Request, res: Response) => {
