@@ -3,24 +3,18 @@ name: Publish (npm + MCP Registry)
 on:
   release:
     types: [published]
-  # Manual run: skips npm publish and (re)publishes the current server.json
-  # version to the MCP Registry. Use to backfill when the registry has fallen
-  # behind npm (e.g. after releases that predate this workflow).
+  # 手動実行: npm publish をスキップし、現行 package.json の version を
+  # server.json に同期して MCP Registry へ (re)publish する (backfill 用)。
   workflow_dispatch: {}
-
-permissions:
-  contents: read
-  id-token: write # required for `mcp-publisher login github-oidc`
 
 jobs:
   publish:
+    # npm publish は release 時のみ (手動 dispatch では既存 version を再publishしない)
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      # --- npm publish (release events only) ---
       - name: Setup Node v20
-        if: github.event_name == 'release'
         uses: actions/setup-node@v4
         with:
           node-version: "20.x"
@@ -28,23 +22,37 @@ jobs:
           cache: "yarn"
           cache-dependency-path: "./yarn.lock"
       - name: Install modules
-        if: github.event_name == 'release'
         run: yarn install --frozen-lockfile
       - name: Build
-        if: github.event_name == 'release'
         run: yarn build
       - name: Publish to npm
-        if: github.event_name == 'release'
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      # --- MCP Registry publish (runs after npm publish; registry is a
-      #     metaregistry and requires the npm package to already exist) ---
-      - name: Install mcp-publisher
+  publish-mcp-registry:
+    needs: publish
+    # release 時は publish 成功後に、手動 dispatch 時は publish スキップ後に実行する。
+    # npm publish が失敗/中断した場合は registry publish しない。
+    if: ${{ always() && needs.publish.result != 'failure' && needs.publish.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # GitHub OIDC 認証に必須
+    steps:
+      - uses: actions/checkout@v4
+      # registry は server.json と npm パッケージの version 一致を要求するため、
+      # 公開済み npm バージョン (package.json) を server.json に同期させる。
+      # これにより server.json の手動 bump 漏れで registry が取り残される事故を防ぐ。
+      - name: Sync server.json version with package.json
         run: |
-          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+          VERSION="$(node -p "require('./package.json').version")"
+          tmp="$(mktemp)"
+          jq --arg v "$VERSION" '.version = $v | (.packages[]?.version) = $v' server.json > "$tmp"
+          mv "$tmp" server.json
+      - name: Install mcp-publisher
+        run: curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
       - name: Login to MCP Registry (GitHub OIDC)
         run: ./mcp-publisher login github-oidc
-      - name: Publish server.json to MCP Registry
+      - name: Publish to MCP Registry
         run: ./mcp-publisher publish
