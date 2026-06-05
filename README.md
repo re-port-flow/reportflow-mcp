@@ -2,6 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/reportflow-mcp.svg)](https://www.npmjs.com/package/reportflow-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![smithery badge](https://smithery.ai/badge/re-port-flow/reportflow-mcp)](https://smithery.ai/servers/re-port-flow/reportflow-mcp)
 
 An MCP (Model Context Protocol) server that turns your [ReportFlow](https://re-port-flow.com) templates into PDF reports — invoices, contracts, statements, anything you've designed — straight from Claude, Cursor, VS Code, or any other MCP-compatible AI agent.
 
@@ -9,6 +10,7 @@ An MCP (Model Context Protocol) server that turns your [ReportFlow](https://re-p
 - **npm package**: [`reportflow-mcp`](https://www.npmjs.com/package/reportflow-mcp) — local stdio fallback for Claude Desktop / Claude Code / Cursor / VS Code
 - **Source**: [github.com/re-port-flow/reportflow-mcp](https://github.com/re-port-flow/reportflow-mcp)
 - **MCP Registry**: [`io.github.re-port-flow/reportflow-mcp`](https://registry.modelcontextprotocol.io/v0/servers?search=reportflow)
+- **Smithery**: [smithery.ai/servers/re-port-flow/reportflow-mcp](https://smithery.ai/servers/re-port-flow/reportflow-mcp)
 
 ## Why ReportFlow MCP
 
