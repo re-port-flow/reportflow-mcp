@@ -1,7 +1,7 @@
 import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 
 const FALLBACK_DIR_NAME = 'reportflow';
 

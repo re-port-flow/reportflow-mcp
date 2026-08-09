@@ -58,6 +58,28 @@ describe('handleGeneratePdfsAsync', () => {
     expect(JSON.parse(result.content[0].text)).toEqual(mockData);
   });
 
+  it('passthrough を含む contents をそのまま REST body に透過する (PRJ-3-1008)', async () => {
+    mockJsonResponse({ requestId: 'req-uuid-3', url: 'https://example.com/d' });
+    const contents = [
+      {
+        fileName: 'invoice1.pdf',
+        params: { name: '山田太郎' },
+        passthrough: { orderId: 'ORD-001', retryCount: 3 },
+      },
+    ];
+
+    await handleGeneratePdfsAsync({ ...input, contents });
+
+    const [, requestInit] = mockFetch.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(requestInit.body as string) as {
+      contents: Array<Record<string, unknown>>;
+    };
+    expect(body.contents[0].passthrough).toEqual({
+      orderId: 'ORD-001',
+      retryCount: 3,
+    });
+  });
+
   it('エラー系: APIエラー時にisError=trueを返す', async () => {
     mockFetch.mockRejectedValue(new Error('Timeout'));
 

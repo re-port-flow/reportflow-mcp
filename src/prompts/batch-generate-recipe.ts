@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { PromptResult } from './generate-pdf-recipe.js';
+import { TEMPLATE_SELECTION_INSTRUCTION } from './template-selection.js';
 
 export const generatePdfsPromptDef = {
   name: 'generate_pdfs',
@@ -42,11 +43,11 @@ export const handleGeneratePdfsPrompt = (
   input: GeneratePdfsPromptInput,
 ): PromptResult => {
   const lines = [
-    'ReportFlow で複数の PDF 帳票を一括生成します。次の手順で進めてください。',
+    'Re:port Flow で複数の PDF 帳票を一括生成します。次の手順で進めてください。',
     '',
     input.designId
       ? `1. designId は \`${input.designId}\` を使用します。\`list_templates\` を呼んで該当 design の \`latestVersion\` を確認し、続けて \`get_design_parameters\` でパラメータ構造を取得してください。`
-      : '1. `list_templates` を呼んでデザイン一覧を取得し、目的のテンプレートの `designId` と `latestVersion` を確認、続けて `get_design_parameters` でパラメータ構造を取得します。',
+      : TEMPLATE_SELECTION_INSTRUCTION,
     input.source
       ? `2. 以下のデータソースを 1 件 1 件展開して \`contents\` 配列を組み立ててください: ${input.source}`
       : '2. ユーザーから件数分のデータ（CSV / 表 / 配列）を受け取り、各行を `{ fileName, params }` の形に展開して `contents` 配列を組み立ててください。',

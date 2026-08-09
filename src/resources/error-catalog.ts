@@ -1,4 +1,4 @@
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import type { ResourceReadResult } from './designs.js';
 
 export const ERROR_CATALOG_URI = 'reportflow://errors';
@@ -39,7 +39,7 @@ export const readErrorCatalog = (uri: URL): ResourceReadResult => ({
 });
 
 export const registerErrorCatalogResource = (server: McpServer): void => {
-  server.resource(
+  server.registerResource(
     'errors',
     ERROR_CATALOG_URI,
     {

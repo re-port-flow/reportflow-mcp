@@ -1,4 +1,4 @@
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { listDesigns } from '../client.js';
 
 export const DESIGNS_RESOURCE_URI = 'reportflow://designs';
@@ -21,7 +21,7 @@ export const readDesigns = async (uri: URL): Promise<ResourceReadResult> => {
 };
 
 export const registerDesignsResource = (server: McpServer): void => {
-  server.resource(
+  server.registerResource(
     'designs',
     DESIGNS_RESOURCE_URI,
     {

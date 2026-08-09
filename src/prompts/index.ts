@@ -1,4 +1,5 @@
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
+import { z } from 'zod';
 import {
   generatePdfPromptDef,
   handleGeneratePdfPrompt,
@@ -10,21 +11,25 @@ import {
 import { reportflowHelpPromptDef, handleReportflowHelp } from './help.js';
 
 export const registerPrompts = (server: McpServer): void => {
-  server.prompt(
+  server.registerPrompt(
     generatePdfPromptDef.name,
-    generatePdfPromptDef.description,
-    generatePdfPromptDef.argsSchema,
+    {
+      description: generatePdfPromptDef.description,
+      argsSchema: z.object(generatePdfPromptDef.argsSchema),
+    },
     (args) => handleGeneratePdfPrompt(args),
   );
-  server.prompt(
+  server.registerPrompt(
     generatePdfsPromptDef.name,
-    generatePdfsPromptDef.description,
-    generatePdfsPromptDef.argsSchema,
+    {
+      description: generatePdfsPromptDef.description,
+      argsSchema: z.object(generatePdfsPromptDef.argsSchema),
+    },
     (args) => handleGeneratePdfsPrompt(args),
   );
-  server.prompt(
+  server.registerPrompt(
     reportflowHelpPromptDef.name,
-    reportflowHelpPromptDef.description,
+    { description: reportflowHelpPromptDef.description },
     () => handleReportflowHelp(),
   );
 };

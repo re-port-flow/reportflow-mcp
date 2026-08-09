@@ -1,11 +1,9 @@
-import * as path from 'path';
-import { pathToFileURL } from 'url';
 import { generatePdfSync, ContentDto } from '../client.js';
 
 export const generatePdfSyncTool = {
   name: 'generate_pdf_sync',
   description:
-    'デザインIDとパラメータを指定してPDFを生成します。応答にダウンロード URL が含まれるため、本ツール 1 回の呼び出しで結果提示が完結します (別途ダウンロード用ツールを呼ぶ必要はありません)。\n- stdio モード (Claude Desktop / Code): ローカルに保存し絶対パスも返します。outputDir で保存先を指定できます (未指定時はクライアントのワークスペース Roots または OS 一時ディレクトリ)。\n- HTTP モード (claude.ai / n8n 等): サーバー側には保存しません。includePreview=true を指定すると inline preview 用のバイナリも併せて返します (claude.ai が PDF preview をサポートしていない現状ではデフォルト false 推奨)。\n\n【重要】呼び出し前に必ず get_design_parameters でデザインの必要パラメータ構造を確認し、ユーザーから必要な値を聞き出すこと。プレースホルダー値・架空の値を勝手に生成しないこと。',
+    'デザインIDとパラメータを指定してPDFを生成します。応答にダウンロード URL が含まれるため、本ツール 1 回の呼び出しで結果提示が完結します (別途ダウンロード用ツールを呼ぶ必要はありません)。\n- stdio モード (Claude Desktop / Code): ローカルに保存し絶対パスも返します。outputDir で保存先を指定できます (未指定時はクライアントのワークスペース Roots または OS 一時ディレクトリ)。\n- HTTP モード (claude.ai / n8n 等): サーバー側には保存せず、ダウンロード URL (fileUrl) と requestId / fileId を返します。\n\n【重要】呼び出し前に必ず get_design_parameters でデザインの必要パラメータ構造を確認し、ユーザーから必要な値を聞き出すこと。プレースホルダー値・架空の値を勝手に生成しないこと。\n\n【passthrough のプライバシー注意】content.passthrough のトップレベルの文字列/数値の値は生成 PDF の XMP メタデータに埋め込まれ、PDF 受領者や OS のファイル検索 (Spotlight / Windows Search) から閲覧可能になるため、個人情報・機微情報を入れないこと。',
 };
 
 export type GeneratePdfSyncInput = {
@@ -13,12 +11,6 @@ export type GeneratePdfSyncInput = {
   version: number;
   content: ContentDto;
   outputDir?: string;
-  /**
-   * true を指定すると EmbeddedResource (application/pdf, base64 blob) も返却する。
-   * デフォルト false。claude.ai が PDF resource を inline 表示するように対応した
-   * 段階で true を推奨に変更する想定。
-   */
-  includePreview?: boolean;
 };
 
 export type GeneratePdfSyncDeps = {
@@ -44,46 +36,18 @@ export type GeneratePdfSyncDeps = {
 };
 
 type TextContent = { type: 'text'; text: string };
-type EmbeddedResource = {
-  type: 'resource';
-  resource: {
-    uri: string;
-    mimeType: string;
-    blob: string;
-  };
-};
 
 /**
  * Tool 層の戻り値型。`client.ts` の `GeneratePdfSyncResult`
  * ({ data, filePath? }) と区別するため `Tool` を付ける。
+ *
+ * claude.ai / Claude Desktop は MCP の EmbeddedResource から PDF を inline 表示
+ * しないため、base64 blob は返さない (payload bloat を避け、fileUrl / filePath での
+ * 受け渡しに一本化する)。
  */
 export type GeneratePdfSyncToolResult = {
-  content: Array<TextContent | EmbeddedResource>;
+  content: TextContent[];
   isError?: true;
-};
-
-const toBase64 = (data: ArrayBuffer): string =>
-  Buffer.from(data).toString('base64');
-
-/**
- * EmbeddedResource の `uri` を組み立てる。
- *
- * - filePath あり (stdio mode): `pathToFileURL` で OS 依存パスを RFC 8089 準拠の
- *   file URI に変換する。Windows の `C:\\Users\\...` も `file:///C:/Users/...`
- *   になる。空白等の特殊文字も URL-encode される。
- * - filePath なし (http mode): サーバ filesystem に書いていないので、fileName
- *   を URL-encode した合成 URI を返す。クライアントがファイル位置を解決する
- *   ことは期待されない (preview 用 placeholder)。
- */
-const buildResourceUri = (
-  filePath: string | undefined,
-  fileName: string,
-): string => {
-  if (filePath) {
-    return pathToFileURL(filePath).href;
-  }
-  const safeName = encodeURIComponent(path.basename(fileName));
-  return `file:///${safeName}`;
 };
 
 /**
@@ -107,7 +71,6 @@ export const handleGeneratePdfSync = async (
   deps: GeneratePdfSyncDeps = {},
 ): Promise<GeneratePdfSyncToolResult> => {
   const mode = deps.mode ?? 'stdio';
-  const includePreview = input.includePreview === true;
   try {
     const outputDir =
       mode === 'http'
@@ -119,15 +82,14 @@ export const handleGeneratePdfSync = async (
       mode !== 'http' && input.outputDir != null && deps.resolveAllowedRoots
         ? await deps.resolveAllowedRoots()
         : undefined;
-    const { data, filePath, fileUrl, requestId, fileId } =
-      await generatePdfSync({
-        designId: input.designId,
-        version: input.version,
-        content: input.content,
-        outputDir,
-        skipSave: mode === 'http',
-        allowedRoots,
-      });
+    const { filePath, fileUrl, requestId, fileId } = await generatePdfSync({
+      designId: input.designId,
+      version: input.version,
+      content: input.content,
+      outputDir,
+      skipSave: mode === 'http',
+      allowedRoots,
+    });
 
     // ─── text content ───────────────────────────────────────────────────
     // 人間向け 1 行 + 構造化 JSON を 1 つの text に同梱。Claude (LLM) が一貫した
@@ -144,26 +106,7 @@ export const handleGeneratePdfSync = async (
         ? `${summary}\n\n${JSON.stringify(structured, null, 2)}`
         : summary;
 
-    const content: Array<TextContent | EmbeddedResource> = [
-      { type: 'text', text },
-    ];
-
-    // ─── EmbeddedResource (opt-in) ──────────────────────────────────────
-    // claude.ai は現状 PDF resource を inline 表示しないため、毎回 base64 blob を
-    // 返すと payload bloat になる。includePreview=true 明示時のみ含める。
-    if (includePreview) {
-      const fileName = input.content.fileName;
-      content.push({
-        type: 'resource',
-        resource: {
-          uri: buildResourceUri(filePath, fileName),
-          mimeType: 'application/pdf',
-          blob: toBase64(data),
-        },
-      });
-    }
-
-    return { content };
+    return { content: [{ type: 'text', text }] };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return {

@@ -11,10 +11,10 @@ jobs:
         working-directory: ./
     steps:
       - uses: actions/checkout@v4
-      - name: Setup Node v20
+      - name: Setup Node v22
         uses: actions/setup-node@v4
         with:
-          node-version: "20.x"
+          node-version: "22.x"
           cache: 'yarn'
           cache-dependency-path: './yarn.lock'
       - name: Install modules
@@ -32,10 +32,10 @@ jobs:
         working-directory: ./
     steps:
       - uses: actions/checkout@v4
-      - name: Setup Node v20
+      - name: Setup Node v22
         uses: actions/setup-node@v4
         with:
-          node-version: "20.x"
+          node-version: "22.x"
           cache: 'yarn'
           cache-dependency-path: './yarn.lock'
       - name: Install modules

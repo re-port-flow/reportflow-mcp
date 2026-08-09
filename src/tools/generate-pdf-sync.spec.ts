@@ -20,7 +20,6 @@ const PDF_ARRAY_BUFFER: ArrayBuffer = PDF_PAYLOAD.buffer.slice(
   PDF_PAYLOAD.byteOffset,
   PDF_PAYLOAD.byteOffset + PDF_PAYLOAD.byteLength,
 );
-const PDF_BASE64 = Buffer.from(PDF_PAYLOAD).toString('base64');
 
 const DEFAULT_FILE_URL =
   'https://api.re-port-flow.com/v1/file/download/req-uuid-1';
@@ -63,22 +62,7 @@ describe('handleGeneratePdfSync', () => {
     },
   };
 
-  type ContentItem =
-    | { type: 'text'; text: string }
-    | {
-        type: 'resource';
-        resource: { uri: string; mimeType: string; blob: string };
-      };
-
-  const findResource = (items: ContentItem[]) =>
-    items.find(
-      (
-        c,
-      ): c is {
-        type: 'resource';
-        resource: { uri: string; mimeType: string; blob: string };
-      } => c.type === 'resource',
-    );
+  type ContentItem = { type: 'text'; text: string };
 
   const findText = (items: ContentItem[]) =>
     items.find((c): c is { type: 'text'; text: string } => c.type === 'text');
@@ -99,7 +83,7 @@ describe('handleGeneratePdfSync', () => {
   };
 
   describe('stdio モード (default)', () => {
-    it('人間向けサマリ + JSON + 保存パスを返す (preview は default OFF)', async () => {
+    it('人間向けサマリ + JSON + 保存パスを返す (text content のみ)', async () => {
       mockBinaryResponse();
 
       const result = await handleGeneratePdfSync(input);
@@ -112,6 +96,8 @@ describe('handleGeneratePdfSync', () => {
         [],
       );
 
+      // PDF の base64 blob は返さない: content は text のみ
+      expect(result.content).toHaveLength(1);
       const text = findText(result.content as ContentItem[]);
       expect(text).toBeDefined();
       const { summary, data } = parseTextContent(text!.text);
@@ -122,24 +108,22 @@ describe('handleGeneratePdfSync', () => {
       expect(data.fileUrl).toBe(DEFAULT_FILE_URL);
       expect(data.requestId).toBe(DEFAULT_REQUEST_ID);
       expect(data.fileId).toBe('file-uuid-1');
-
-      // preview は default OFF
-      expect(findResource(result.content as ContentItem[])).toBeUndefined();
     });
 
-    it('includePreview=true で EmbeddedResource を併せて返す', async () => {
+    it('passthrough を含む content をそのまま REST body に透過する (PRJ-3-1008)', async () => {
       mockBinaryResponse();
+      const passthrough = { orderId: 'ORD-001', retryCount: 3 };
 
-      const result = await handleGeneratePdfSync({
+      await handleGeneratePdfSync({
         ...input,
-        includePreview: true,
+        content: { ...input.content, passthrough },
       });
 
-      const resource = findResource(result.content as ContentItem[]);
-      expect(resource).toBeDefined();
-      expect(resource!.resource.mimeType).toBe('application/pdf');
-      expect(resource!.resource.blob).toBe(PDF_BASE64);
-      expect(resource!.resource.uri).toBe('file:///tmp/invoice.pdf');
+      const [, requestInit] = mockFetch.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(requestInit.body as string) as {
+        content: Record<string, unknown>;
+      };
+      expect(body.content.passthrough).toEqual(passthrough);
     });
 
     it('resolveOutputDir をフォールバックで使う', async () => {
@@ -200,24 +184,10 @@ describe('handleGeneratePdfSync', () => {
 
       expect(resolveAllowedRoots).not.toHaveBeenCalled();
     });
-
-    it('空白を含むパスでも RFC 8089 準拠の file URI を返す (preview ON 時)', async () => {
-      mockBinaryResponse();
-      mockedFileHelper.saveTempFile.mockResolvedValue(
-        '/tmp/my docs/invoice.pdf',
-      );
-
-      const result = await handleGeneratePdfSync({
-        ...input,
-        includePreview: true,
-      });
-      const resource = findResource(result.content as ContentItem[]);
-      expect(resource!.resource.uri).toBe('file:///tmp/my%20docs/invoice.pdf');
-    });
   });
 
   describe('HTTP モード', () => {
-    it('saveTempFile を呼ばず人間向けサマリ + fileUrl JSON を返す (preview OFF)', async () => {
+    it('saveTempFile を呼ばず人間向けサマリ + fileUrl JSON を返す (text content のみ)', async () => {
       mockBinaryResponse();
 
       const result = await handleGeneratePdfSync(input, { mode: 'http' });
@@ -225,6 +195,8 @@ describe('handleGeneratePdfSync', () => {
       expect(result.isError).toBeUndefined();
       expect(mockedFileHelper.saveTempFile).not.toHaveBeenCalled();
 
+      // PDF の base64 blob は返さない: content は text のみ
+      expect(result.content).toHaveLength(1);
       const text = findText(result.content as ContentItem[]);
       expect(text).toBeDefined();
       const { summary, data } = parseTextContent(text!.text);
@@ -234,24 +206,36 @@ describe('handleGeneratePdfSync', () => {
       expect(data.fileUrl).toBe(DEFAULT_FILE_URL);
       expect(data.requestId).toBe(DEFAULT_REQUEST_ID);
       expect(data.fileId).toBe('file-uuid-1');
-
-      // preview は default OFF → resource は含まない (payload bloat 回避)
-      expect(findResource(result.content as ContentItem[])).toBeUndefined();
     });
 
-    it('includePreview=true で EmbeddedResource も併せて返す', async () => {
-      mockBinaryResponse();
+    it('PDF 本文 (arrayBuffer) をバッファせず body を cancel する (headers-only)', async () => {
+      const arrayBufferSpy = jest.fn(() => Promise.resolve(PDF_ARRAY_BUFFER));
+      const cancelSpy = jest.fn(() => Promise.resolve());
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve({}),
+        arrayBuffer: arrayBufferSpy,
+        body: { cancel: cancelSpy },
+        headers: new Headers({
+          'File-URL': DEFAULT_FILE_URL,
+          'Request-Id': DEFAULT_REQUEST_ID,
+          'X-File-Mapping': DEFAULT_FILE_MAPPING,
+        }),
+      });
 
-      const result = await handleGeneratePdfSync(
-        { ...input, includePreview: true },
-        { mode: 'http' },
-      );
+      const result = await handleGeneratePdfSync(input, { mode: 'http' });
 
-      const resource = findResource(result.content as ContentItem[]);
-      expect(resource).toBeDefined();
-      expect(resource!.resource.mimeType).toBe('application/pdf');
-      expect(resource!.resource.blob).toBe(PDF_BASE64);
-      expect(resource!.resource.uri).toBe('file:///invoice.pdf');
+      expect(result.isError).toBeUndefined();
+      // 本文はダウンロードしない
+      expect(arrayBufferSpy).not.toHaveBeenCalled();
+      // ストリームは明示的に破棄する
+      expect(cancelSpy).toHaveBeenCalledTimes(1);
+
+      const text = findText(result.content as ContentItem[]);
+      const { data } = parseTextContent(text!.text);
+      expect(data.fileUrl).toBe(DEFAULT_FILE_URL);
     });
 
     it('sync エンドポイントが File-URL ヘッダを返さなくても text は返す (summary のみ)', async () => {
@@ -275,24 +259,6 @@ describe('handleGeneratePdfSync', () => {
 
       expect(result.isError).toBeUndefined();
       expect(mockedFileHelper.saveTempFile).not.toHaveBeenCalled();
-    });
-
-    it('fileName に特殊文字を含んでも URL-encode される (preview ON 時)', async () => {
-      mockBinaryResponse();
-
-      const result = await handleGeneratePdfSync(
-        {
-          ...input,
-          content: { ...input.content, fileName: '請求書 #1.pdf' },
-          includePreview: true,
-        },
-        { mode: 'http' },
-      );
-
-      const resource = findResource(result.content as ContentItem[]);
-      expect(resource!.resource.uri).toBe(
-        `file:///${encodeURIComponent('請求書 #1.pdf')}`,
-      );
     });
   });
 

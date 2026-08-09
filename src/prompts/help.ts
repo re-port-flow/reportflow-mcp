@@ -3,12 +3,12 @@ import type { PromptResult } from './generate-pdf-recipe.js';
 export const reportflowHelpPromptDef = {
   name: 'reportflow_help',
   description:
-    'ReportFlow MCP サーバーの利用可能機能（Tools / Prompts / Resources / Sampling）の概要を提示します。',
+    'Re:port Flow MCP サーバーの利用可能機能（Tools / Prompts / Resources / Sampling）の概要を提示します。',
 };
 
 export const handleReportflowHelp = (): PromptResult => {
   const text = [
-    '# ReportFlow MCP サーバー — 機能概観',
+    '# Re:port Flow MCP サーバー — 機能概観',
     '',
     '## Prompts（スラッシュコマンドから呼ぶレシピ）',
     '- `/generate_pdf` — 単一 PDF 生成のステップガイド',

@@ -16,11 +16,20 @@ jest.mock('@napi-rs/keyring', () => {
 });
 
 import { createKeychainStore, isKeychainAvailable } from './keychain.js';
+import { TokenSet } from './types.js';
 
 const mod = jest.requireMock('@napi-rs/keyring') as {
   __setPassword: jest.Mock;
   __getPassword: jest.Mock;
   __deletePassword: jest.Mock;
+};
+
+const SAMPLE_TOKENS: TokenSet = {
+  accessToken: '<JWT_REDACTED>',
+  refreshToken: '<HEX_REDACTED>',
+  expiresAt: 1893456000000,
+  scope: 'openid profile designs:read',
+  workspaceId: '00000000-0000-0000-0000-000000000000',
 };
 
 describe('token-store/keychain', () => {
@@ -29,6 +38,36 @@ describe('token-store/keychain', () => {
     mod.__setPassword.mockImplementation(() => undefined);
     mod.__deletePassword.mockImplementation(() => undefined);
     mod.__getPassword.mockReturnValue(null);
+  });
+
+  describe('load', () => {
+    it('returns null when no password is stored', async () => {
+      mod.__getPassword.mockReturnValueOnce(null);
+      const store = createKeychainStore();
+      await expect(store.load('account-1')).resolves.toBeNull();
+    });
+
+    it('parses and returns the stored TokenSet', async () => {
+      mod.__getPassword.mockReturnValueOnce(JSON.stringify(SAMPLE_TOKENS));
+      const store = createKeychainStore();
+      await expect(store.load('account-1')).resolves.toEqual(SAMPLE_TOKENS);
+    });
+  });
+
+  describe('save', () => {
+    it('serializes and writes the TokenSet', async () => {
+      const store = createKeychainStore();
+      await expect(
+        store.save('account-1', SAMPLE_TOKENS),
+      ).resolves.toBeUndefined();
+      expect(mod.__setPassword).toHaveBeenCalledWith(
+        JSON.stringify(SAMPLE_TOKENS),
+      );
+    });
+
+    it('exposes kind=keychain', () => {
+      expect(createKeychainStore().kind).toEqual('keychain');
+    });
   });
 
   describe('clear', () => {
