@@ -100,3 +100,30 @@ export async function fetchBinaryWithHeaders(
     clearTimer();
   }
 }
+
+/**
+ * レスポンス本文を読まずにヘッダーだけ取得する。
+ * content-service の sync エンドポイントは `File-URL` / `Request-Id` /
+ * `X-File-Mapping` をヘッダーで返すため、PDF バイト列が不要なケース (HTTP モードで
+ * fileUrl のみ利用する場合) では本文をメモリにバッファせずに済む。
+ * 本文ストリームは明示的に cancel してコネクションを解放する。
+ */
+export async function fetchHeadersOnly(
+  url: string,
+  init: RequestInit & { timeoutMs?: number } = {},
+): Promise<Headers> {
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, signal, ...rest } = init;
+  const [timeoutSignal, clearTimer] = withTimeout(signal, timeoutMs);
+  try {
+    const res = await fetch(url, { ...rest, signal: timeoutSignal });
+    if (!res.ok) {
+      const msg = await parseErrorMessage(res);
+      throw new HttpError(res.status, `[${res.status}] ${msg}`);
+    }
+    // 本文は不要。バッファせずストリームを破棄する。
+    await res.body?.cancel();
+    return res.headers;
+  } finally {
+    clearTimer();
+  }
+}

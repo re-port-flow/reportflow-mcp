@@ -1,7 +1,5 @@
-import {
-  ResourceTemplate,
-  type McpServer,
-} from '@modelcontextprotocol/sdk/server/mcp.js';
+import { ResourceTemplate } from '@modelcontextprotocol/server';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { getDesignParameters, listDesigns } from '../client.js';
 import { AuthRequiredError } from '../auth.js';
 import type { ResourceReadResult } from './designs.js';
@@ -47,7 +45,7 @@ export const listDesignParameterResources = async () => {
 };
 
 export const registerDesignParametersResource = (server: McpServer): void => {
-  server.resource(
+  server.registerResource(
     'design-parameters',
     new ResourceTemplate(DESIGN_PARAMETERS_URI_TEMPLATE, {
       list: listDesignParameterResources,
@@ -55,7 +53,7 @@ export const registerDesignParametersResource = (server: McpServer): void => {
     {
       title: 'デザインのパラメータスキーマ',
       description:
-        '指定 designId の最新バージョンのパラメータ構造（get_design_parameters と同等内容）を Resource として公開。',
+        '指定 designId の最新バージョンのパラメータ構造（get_design_parameters と同等内容。作成者が設定した場合は各フィールドの意味を表す description を含む）を Resource として公開。',
       mimeType: 'application/json',
     },
     readDesignParameters,

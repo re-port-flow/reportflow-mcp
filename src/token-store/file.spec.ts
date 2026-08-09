@@ -25,6 +25,8 @@ describe('token-store/file', () => {
   });
 
   afterEach(async () => {
+    // アサーション失敗時でも spy をリークさせないため、ここで一括復元する。
+    jest.restoreAllMocks();
     process.env['REPORTFLOW_TOKEN_STORE_PATH'] = originalOverride;
     process.env['XDG_STATE_HOME'] = originalXdg;
     await fs.rm(tmpDir, { recursive: true, force: true });
@@ -90,6 +92,24 @@ describe('token-store/file', () => {
     it('clear is idempotent when file is absent', async () => {
       const store = createFileStore();
       await expect(store.clear(ACCOUNT)).resolves.toBeUndefined();
+    });
+
+    it('load rethrows non-ENOENT errors', async () => {
+      const err = Object.assign(new Error('permission denied'), {
+        code: 'EACCES',
+      });
+      jest.spyOn(fs, 'readFile').mockRejectedValueOnce(err);
+      const store = createFileStore();
+      await expect(store.load(ACCOUNT)).rejects.toThrow('permission denied');
+    });
+
+    it('clear rethrows non-ENOENT errors', async () => {
+      const err = Object.assign(new Error('permission denied'), {
+        code: 'EACCES',
+      });
+      jest.spyOn(fs, 'unlink').mockRejectedValueOnce(err);
+      const store = createFileStore();
+      await expect(store.clear(ACCOUNT)).rejects.toThrow('permission denied');
     });
 
     it('exposes kind=file', () => {

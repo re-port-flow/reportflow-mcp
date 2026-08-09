@@ -1,12 +1,14 @@
 import * as os from 'os';
 import * as path from 'path';
 import { resolveDefaultOutputDir, resolveAllowedRoots } from './index.js';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 
 const makeFakeServer = (
-  listRoots: jest.Mock<Promise<{ roots: Array<{ uri: string; name?: string }> }>, []>,
-): McpServer =>
-  ({ server: { listRoots } }) as unknown as McpServer;
+  listRoots: jest.Mock<
+    Promise<{ roots: Array<{ uri: string; name?: string }> }>,
+    []
+  >,
+): McpServer => ({ server: { listRoots } }) as unknown as McpServer;
 
 const FALLBACK = path.join(os.tmpdir(), 'reportflow');
 

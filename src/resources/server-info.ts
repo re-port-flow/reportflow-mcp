@@ -1,4 +1,4 @@
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import type { ResourceReadResult } from './designs.js';
 
 export const SERVER_INFO_URI = 'reportflow://server-info';
@@ -7,7 +7,7 @@ export const buildServerInfo = (pkg: { name: string; version: string }) => ({
   name: pkg.name,
   version: pkg.version,
   description:
-    'ReportFlow PDF 帳票生成 MCP サーバー。Tools / Prompts / Resources / Sampling / Roots に対応。',
+    'Re:port Flow MCP（パッケージ名: reportflow-mcp）。Re:port Flow テンプレートを使う PDF 帳票生成サーバーで、Tools / Prompts / Resources / Sampling / Roots に対応。',
   capabilities: {
     tools: [
       'authenticate',
@@ -70,7 +70,7 @@ export const registerServerInfoResource = (
   server: McpServer,
   pkg: { name: string; version: string },
 ): void => {
-  server.resource(
+  server.registerResource(
     'server-info',
     SERVER_INFO_URI,
     {

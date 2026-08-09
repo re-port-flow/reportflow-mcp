@@ -2,15 +2,17 @@ import open from 'open';
 import { startCallbackServer } from './auth-server.js';
 import { getHttpAuthContext } from './auth-context.js';
 import { fetchJson, HttpError } from './http.js';
+import { decodeJwtPayload } from './jwt.js';
 import {
   generateCodeChallenge,
   generateCodeVerifier,
   generateState,
 } from './pkce.js';
+import { recordCredentialWorkspace } from './telemetry/workspace.js';
 import { createTokenStore, TokenSet } from './token-store/index.js';
 
 const DEFAULT_AUTH_URL = 'https://re-port-flow.com/api/v1';
-// 公式 ReportFlow MCP の OAuth client_id (ReportFlow 側で配布済の Public client)。
+// 公式 Re:port Flow MCP の OAuth client_id (Re:port Flow 側で配布済の Public client)。
 // 環境変数 REPORTFLOW_CLIENT_ID で上書き可能。
 const DEFAULT_CLIENT_ID = 'reportflow-mcp';
 const DEFAULT_SCOPE =
@@ -32,11 +34,15 @@ type TokenResponse = {
   scope?: string;
 };
 
-type JwtPayload = {
-  workspace_id?: string;
-};
-
 export class AuthRequiredError extends Error {
+  /**
+   * 発生した経路。復旧手順が経路ごとに異なるため、message を組み立てた後も
+   * 呼び出し側 (ツール層) が経路別の補足を出せるように保持する。
+   * - stdio: `authenticate` ツールを呼べば復旧する (client_id は固定の seed クライアント)
+   * - http: トークンを持つのはクライアント側 (claude.ai 等) なので、そちらでの再認可が必要
+   */
+  readonly mode: 'stdio' | 'http';
+
   constructor(detail?: string, mode: 'stdio' | 'http' = 'stdio') {
     const action =
       mode === 'http'
@@ -48,6 +54,7 @@ export class AuthRequiredError extends Error {
         : `再認証が必要です。${action}。`,
     );
     this.name = 'AuthRequiredError';
+    this.mode = mode;
   }
 }
 
@@ -74,17 +81,6 @@ const getOAuthConfig = (): OAuthConfig => {
   };
 };
 
-const decodeJwtPayload = (jwt: string): JwtPayload | null => {
-  try {
-    const parts = jwt.split('.');
-    if (parts.length < 2) return null;
-    const json = Buffer.from(parts[1], 'base64url').toString('utf8');
-    return JSON.parse(json) as JwtPayload;
-  } catch {
-    return null;
-  }
-};
-
 const toTokenSet = (
   resp: TokenResponse,
   fallbackRefresh: string,
@@ -98,6 +94,20 @@ const toTokenSet = (
     scope: resp.scope ?? fallbackScope,
     workspaceId: payload?.workspace_id,
   };
+};
+
+/**
+ * telemetry 側へ「今どのワークスペースで動いているか」を伝える (PRJ-3-1093)。
+ * トークンを load / save / clear するすべての経路から呼び、
+ * `authenticate force=true` でのワークスペース切り替えにも追従させる。
+ *
+ * 旧バージョンが保存した TokenSet には workspaceId が無いことがあるので、
+ * その場合は access token から読み直す。
+ */
+const rememberWorkspace = (tokens: TokenSet): void => {
+  recordCredentialWorkspace(
+    tokens.workspaceId ?? decodeJwtPayload(tokens.accessToken)?.workspace_id,
+  );
 };
 
 const buildAuthorizeUrl = (
@@ -177,6 +187,8 @@ export const authorize = async (
   const store = createTokenStore();
   if (options.force) {
     await store.clear(config.clientId).catch(() => undefined);
+    // 再認証で別ワークスペースを選ぶ可能性があるため、先に忘れる。
+    recordCredentialWorkspace(undefined);
   }
 
   const codeVerifier = generateCodeVerifier();
@@ -202,6 +214,7 @@ export const authorize = async (
     redirectUri,
   });
   await store.save(config.clientId, tokens);
+  rememberWorkspace(tokens);
 
   return {
     workspaceId: tokens.workspaceId,
@@ -221,12 +234,14 @@ const loadOrRefresh = async (): Promise<TokenSet> => {
     try {
       const fresh = await refreshTokens(config, tokens.refreshToken);
       await store.save(config.clientId, fresh);
+      rememberWorkspace(fresh);
       return fresh;
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       throw new AuthRequiredError(`refresh 失敗 (${detail})`);
     }
   }
+  rememberWorkspace(tokens);
   return tokens;
 };
 
@@ -238,6 +253,25 @@ export const getAuthHeaders = async (): Promise<Record<string, string>> => {
   }
   const tokens = await loadOrRefresh();
   return { Authorization: `Bearer ${tokens.accessToken}` };
+};
+
+/**
+ * 現在の認証に紐づくワークスペースID (アクセストークン JWT の workspace_id
+ * クレーム)。reposts-api のパス (/:workspaceId/...) を組み立てる用途で使う。
+ *
+ * 複製先ワークスペースはこの値（= 同意画面でユーザーが選んだワークスペース）
+ * のみ。ツール引数からは受け取らない (PRJ-3-1238)。
+ * トークン未保存・期限切れ時は loadOrRefresh 経由で AuthRequiredError を投げる。
+ */
+export const getAuthWorkspaceId = async (): Promise<string | undefined> => {
+  const httpCtx = getHttpAuthContext();
+  if (httpCtx) {
+    return decodeJwtPayload(httpCtx.accessToken)?.workspace_id;
+  }
+  const tokens = await loadOrRefresh();
+  return (
+    tokens.workspaceId ?? decodeJwtPayload(tokens.accessToken)?.workspace_id
+  );
 };
 
 export const requestWithAuth = async <T>(
@@ -270,6 +304,7 @@ export const requestWithAuth = async <T>(
       try {
         const fresh = await refreshTokens(config, cached.refreshToken);
         await store.save(config.clientId, fresh);
+        rememberWorkspace(fresh);
         return await fn({ Authorization: `Bearer ${fresh.accessToken}` });
       } catch (refreshErr) {
         const detail =
@@ -285,4 +320,5 @@ export const clearAuth = async (): Promise<void> => {
   const config = getOAuthConfig();
   const store = createTokenStore();
   await store.clear(config.clientId).catch(() => undefined);
+  recordCredentialWorkspace(undefined);
 };

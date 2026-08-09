@@ -1,11 +1,15 @@
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { getDesignParameters } from '../client.js';
-import { requestSamplingText } from '../sampling/request.js';
+import type { GetDesignParametersResponse } from '../client.js';
+import {
+  requestSamplingText,
+  SamplingUnsupportedError,
+} from '../sampling/request.js';
 
 export const suggestParamsTool = {
   name: 'suggest_params',
   description:
-    '自然文の要件と designId からクライアント AI（Sampling）を使って generate_pdf_sync の params JSON を組み立てます。サーバー側 API キー不要。Sampling 未対応クライアントでは利用不可です。生成された params は内容確認のうえユーザーの承認を得てから generate_pdf_sync に渡してください。',
+    '自然文の要件と designId から、クライアント AI（Sampling）で generate_pdf_sync 用の params JSON を下書きします。【Sampling 必須】claude.ai 等の Sampling 非対応クライアントでは自動生成できず、その場合はパラメータスキーマをそのまま返すので手動で params を埋めてください。パラメータ構造の確認だけが目的なら get_design_parameters を使ってください。サーバー側 API キー不要。生成された params は必ずユーザー承認のうえ generate_pdf_sync に渡してください。',
 };
 
 export type SuggestParamsInput = {
@@ -40,7 +44,7 @@ export const parseJsonLoose = (raw: string): unknown => {
 
 const buildPrompt = (schema: unknown, description: string): string =>
   [
-    'ReportFlow の PDF テンプレート用 params JSON を生成してください。',
+    'Re:port Flow の PDF テンプレート用 params JSON を生成してください。',
     '',
     '【パラメータスキーマ】',
     JSON.stringify(schema, null, 2),
@@ -49,18 +53,77 @@ const buildPrompt = (schema: unknown, description: string): string =>
     description,
     '',
     'ルール:',
-    '- スキーマで型が "date" のフィールドは "YYYY-MM-DD" 形式の文字列にしてください。',
-    '- スキーマに存在しないキーを追加しないでください。',
+    '- スキーマ内の "name" / "type" / "label" / "description" / "spec" は各パラメータの定義（メタデータ）を表すプロパティ名です。これらのプロパティ名そのものを出力 JSON のキーにしないでください。',
+    '- 出力 JSON のキーには実際のパラメータ名（各定義の "name" の値）を使ってください。"name" の値が "description" 等であれば、それは正当な出力キーになります（メタデータ用キーと混同しないこと）。',
+    '- 定義に "description" があれば、それはそのパラメータの意味・入力ガイドです。値を解釈・選択する際は必ず参照してください。',
+    '- "type" が "date" のパラメータは "YYYY-MM-DD" 形式の文字列にしてください。',
+    '- "type" が "array" / "collection" のパラメータは "spec" の構造に従って入れ子の値にし、それ以外は要件から導出した具体値（文字列・数値・真偽値・null）を直接設定してください。',
     '- 値が要件から判断できないフィールドは null を入れてください（プレースホルダー文字列禁止）。',
     '- 出力は JSON オブジェクトのみ。コードフェンス禁止。',
   ].join('\n');
+
+/** クライアントが Sampling (LLM 呼び出し) capability を宣言しているか。 */
+const clientSupportsSampling = (server: McpServer): boolean => {
+  // 古い SDK / カスタム実装では getClientCapabilities を持たない可能性がある。
+  // その場合に false を返すと対応クライアントでも Sampling を無効化してしまうため、
+  // 判定不能時は実行を試み、requestSamplingText 側の SamplingUnsupportedError
+  // 捕捉に委ねる（未定義メソッド呼び出しによるクラッシュも防ぐ）。
+  if (typeof server.server.getClientCapabilities !== 'function') {
+    return true;
+  }
+  return server.server.getClientCapabilities()?.sampling != null;
+};
+
+/**
+ * Sampling 非対応クライアント (claude.ai 等) 向けフォールバック。
+ * 取得済みのパラメータスキーマと手動入力ガイドを返し、
+ * 「suggest_params に逃げても何も得られない」デッドエンドを防ぐ。
+ * get_design_parameters と同等の情報を返すため、後続の手動 params 組み立てに使える。
+ */
+const samplingUnavailableResult = (
+  schema: GetDesignParametersResponse,
+  reason: string,
+): SuggestParamsResult => ({
+  content: [
+    {
+      type: 'text',
+      text: JSON.stringify(
+        {
+          samplingUnavailable: true,
+          reason,
+          guidance:
+            'このクライアントは Sampling（LLM 呼び出し）非対応のため params を自動生成できません。下記 parameters のスキーマに従って各値をユーザーに確認し、generate_pdf_sync の content.params へ手動で渡してください。スキーマに無いキーは追加しないこと。構造確認だけが目的なら get_design_parameters を使ってください。',
+          parameters: schema,
+        },
+        null,
+        2,
+      ),
+    },
+  ],
+});
 
 export const handleSuggestParams = async (
   server: McpServer,
   input: SuggestParamsInput,
 ): Promise<SuggestParamsResult> => {
+  let schema: GetDesignParametersResponse;
   try {
-    const schema = await getDesignParameters(input.designId, input.version);
+    schema = await getDesignParameters(input.designId, input.version);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      content: [{ type: 'text', text: `エラー: ${message}` }],
+      isError: true,
+    };
+  }
+
+  // Sampling 非対応クライアントでは LLM 呼び出しができないため、無駄な往復をせず
+  // 取得済みスキーマ + 手動入力ガイドを返して処理を成立させる。
+  if (!clientSupportsSampling(server)) {
+    return samplingUnavailableResult(schema, 'client-capability-missing');
+  }
+
+  try {
     const prompt = buildPrompt(schema, input.description);
     const sampled = await requestSamplingText(server, prompt, {
       maxTokens: 2048,
@@ -111,6 +174,11 @@ export const handleSuggestParams = async (
       ],
     };
   } catch (err) {
+    // 安全網: capability 上は Sampling 可でも、実際の呼び出しが Method not found 等で
+    // 失敗するクライアントでも、エラーで終わらせずスキーマを返す。
+    if (err instanceof SamplingUnsupportedError) {
+      return samplingUnavailableResult(schema, err.message);
+    }
     const message = err instanceof Error ? err.message : String(err);
     return {
       content: [{ type: 'text', text: `エラー: ${message}` }],

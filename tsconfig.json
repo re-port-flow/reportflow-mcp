@@ -16,5 +16,10 @@
   "include": [
     "src/**/*.ts"
   ],
-  "exclude": ["node_modules", "dist", "src/**/*.spec.ts"]
+  "exclude": ["node_modules", "dist", "src/**/*.spec.ts"],
+  "ts-node": {
+    // ソースは ESM 形式の .js 拡張子 import を使うが module=CommonJS のため、
+    // ts-node(dev/dev:http) では .js→.ts 解決に experimentalResolver が必要。
+    "experimentalResolver": true
+  }
 }

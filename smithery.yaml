@@ -15,10 +15,10 @@ startCommand:
         description: Override default OAuth client_id (optional). Leave empty to use the official public client.
       reportflowAuthUrl:
         type: string
-        description: Override default ReportFlow auth URL (optional). Defaults to https://re-port-flow.com/api/v1.
+        description: Override default Re:port Flow auth URL (optional). Defaults to https://re-port-flow.com/api/v1.
       reportflowApiBaseUrl:
         type: string
-        description: Override default ReportFlow Content Service URL (optional). Defaults to https://api.re-port-flow.com.
+        description: Override default Re:port Flow Content Service URL (optional). Defaults to https://api.re-port-flow.com.
       reportflowTokenStore:
         type: string
         enum:

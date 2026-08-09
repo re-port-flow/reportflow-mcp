@@ -1,9 +1,10 @@
-import { startHttpServer } from './http-server.js';
+import { parsePort, startHttpServer } from './http-server.js';
 
-const portStr = process.env['PORT'];
-const port = portStr ? parseInt(portStr, 10) : undefined;
-if (port !== undefined && (Number.isNaN(port) || port <= 0)) {
-  console.error(`PORT must be a positive integer (got ${portStr})`);
+let port: number | undefined;
+try {
+  port = parsePort(process.env['PORT']);
+} catch (err) {
+  console.error((err as Error).message);
   process.exit(1);
 }
 

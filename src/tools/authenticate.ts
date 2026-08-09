@@ -3,7 +3,7 @@ import { authorize } from '../auth.js';
 export const authenticateTool = {
   name: 'authenticate',
   description:
-    'ReportFlow への OAuth2 認証を行います。ブラウザが起動し、ログイン・ワークスペース選択・consent を経てトークンを keychain (または XDG file) に保存します。他のツールが認証エラーを返したら、まずこのツールを呼んでください。force=true で既存トークンを破棄して再認証します。',
+    'Re:port Flow への OAuth2 認証を行います。ブラウザが起動し、ログイン・ワークスペース選択・consent を経てトークンを keychain (または XDG file) に保存します。他のツールが認証エラーを返したら、まずこのツールを呼んでください。force=true で既存トークンを破棄して再認証します。',
 };
 
 export type AuthenticateInput = {

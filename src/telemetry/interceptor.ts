@@ -3,8 +3,15 @@
 // Emits `integration.mcp.invoked` with { tool, durationMs, success, errorClass? }
 // after every tool call (success or failure). Never mutates the handler return
 // value, so existing callers see identical behavior.
+//
+// workspace の帰属規則は `telemetry/workspace.ts` 冒頭のコメントを参照。
 
 import type { TelemetryClient } from './client.js';
+import {
+  resolveInvocationWorkspaceId,
+  runWithInvocationWorkspace,
+  type InvocationWorkspace,
+} from './workspace.js';
 
 type ToolHandler<I, R> = (input: I) => Promise<R>;
 
@@ -13,18 +20,15 @@ type ToolResultLike = {
   [key: string]: unknown;
 };
 
-// None of today's tool schemas declare `workspaceId` (the workspace is
-// implicit in the OAuth token / keychain entry), so this helper currently
-// returns `undefined` for every production call. Kept defensively so a
-// future tool that exposes `workspaceId` to the model surfaces it
-// automatically — and so the field can be re-pointed at the OAuth /
-// keychain auth context once that is threaded into createMcpServer
-// (Codex P2 on PR #38).
-const extractWorkspaceId = (input: unknown): string | undefined => {
-  if (!input || typeof input !== 'object') return undefined;
-  const value = (input as Record<string, unknown>).workspaceId;
-  return typeof value === 'string' ? value : undefined;
-};
+/**
+ * 帰属先の解決関数。テストから差し替えられるよう注入可能にする。
+ *
+ * 同期関数であることが重要 — telemetry の解決でツール応答を待たせない
+ * (keychain / ファイル I/O はここでは行わない)。
+ */
+export type WorkspaceIdResolver = (
+  invocation: InvocationWorkspace,
+) => string | undefined;
 
 const inferErrorClass = (
   result: unknown,
@@ -41,16 +45,39 @@ export const withTelemetry = <I, R extends ToolResultLike>(
   client: TelemetryClient,
   toolName: string,
   handler: ToolHandler<I, R>,
+  resolveWorkspace: WorkspaceIdResolver = resolveInvocationWorkspaceId,
 ): ToolHandler<I, R> => {
   return async (input: I): Promise<R> => {
     const startedAt = Date.now();
-    const workspaceId = extractWorkspaceId(input);
+
+    // この呼び出しが認証に使った資格情報を受け取るスロット。ハンドラ内の auth 層
+    // (`recordCredentialWorkspace`) が書き込む。
+    const invocation: InvocationWorkspace = {};
+
+    // 例外は握って undefined に落とす — telemetry の失敗でツールを壊さない。
+    const resolveSafely = (): string | undefined => {
+      try {
+        return resolveWorkspace(invocation);
+      } catch {
+        return undefined;
+      }
+    };
 
     try {
-      const result = await handler(input);
+      const result = await runWithInvocationWorkspace(invocation, () =>
+        handler(input),
+      );
       client.track({
         event: 'integration.mcp.invoked',
-        workspaceId,
+        // 成功した呼び出しにのみ workspace を付ける (PRJ-3-1117)。
+        // HTTP モードの workspace_id は**署名検証していない** Bearer JWT の claim
+        // で、`handleMcp` は Bearer の存在しか見ない。失敗イベントにも載せると、
+        // 未認証の第三者が任意のワークスペース宛に `integration.mcp.invoked` を
+        // 注入でき、本番指標を汚染できてしまう。成功 = 上流 API がその Bearer を
+        // 受理した、なので成功だけ帰属すればこの経路は閉じる。
+        // 月次コホート分類は success=true の行だけを見るため影響しない
+        // (developer-docs `internal-docs/mcp-cohort-monthly.md` §3.1 / §6.3)。
+        workspaceId: result.isError ? undefined : resolveSafely(),
         // Stamp client-side ingest time so events from clock-skewed clients
         // remain orderable in Analytics Engine (matches schema §6).
         timestamp: Date.now(),
@@ -67,7 +94,7 @@ export const withTelemetry = <I, R extends ToolResultLike>(
     } catch (err) {
       client.track({
         event: 'integration.mcp.invoked',
-        workspaceId,
+        // throw = 失敗。上と同じ理由で workspace は付けない。
         timestamp: Date.now(),
         properties: {
           tool: toolName,

@@ -1,4 +1,9 @@
-import { fetchJson, fetchBinary, fetchBinaryWithHeaders } from './http.js';
+import {
+  fetchJson,
+  fetchBinary,
+  fetchBinaryWithHeaders,
+  fetchHeadersOnly,
+} from './http.js';
 import { requestWithAuth } from './auth.js';
 import { REPORTFLOW_API_BASE_URL } from './config.js';
 import { saveTempFile } from './file-helper.js';
@@ -10,6 +15,9 @@ const getBaseUrl = () =>
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+// リーフ項目のオブジェクトは name・type・label を持ち、作成者が設定した場合は
+// 各フィールドの意味・入力ガイドを表す任意の description（文字列）も含む。
+// content-service がスキーマに透過するため、MCP はそのまま中継して AI に届ける。
 export type DesignParameter =
   | string
   | Record<string, string>
@@ -41,6 +49,12 @@ export type ContentDto = {
   shareType?: ShareTypeCode;
   passcodeEnabled?: boolean;
   params: ContentParam;
+  /**
+   * Webhook 通知・X-File-Mapping ヘッダーへの透過メタデータ。
+   * トップレベルの string/number 値は生成 PDF の XMP メタデータにも
+   * 埋め込まれる (content-service PRJ-3-1007)。
+   */
+  passthrough?: Record<string, unknown>;
 };
 
 export type ShareInfo = {
@@ -93,7 +107,8 @@ export const getDesignParameters = async (
 
 /**
  * generate_pdf_sync の結果。
- * - data    : PDF バイト列 (EmbeddedResource 用)
+ * - data    : PDF バイト列 (stdio モードで saveTempFile に渡す)。HTTP モード (skipSave)
+ *             では本文を取得しないため undefined。
  * - filePath: stdio モードで saveTempFile した場合の絶対パス。HTTP モードでは undefined。
  * - fileUrl : content-service の sync エンドポイントが返す `File-URL` ヘッダー。
  *             ワークスペースのダウンロードエンドポイント URL (`{base}/file/download/{requestId}`)。
@@ -104,7 +119,7 @@ export const getDesignParameters = async (
  *   /v1/file/sync/single → 200 ヘッダー (File-URL / Request-Id / X-File-Mapping)
  */
 export type GeneratePdfSyncResult = {
-  data: ArrayBuffer;
+  data?: ArrayBuffer;
   filePath?: string;
   fileUrl?: string;
   requestId?: string;
@@ -153,21 +168,34 @@ export const generatePdfSync = async (body: {
 }): Promise<GeneratePdfSyncResult> => {
   const url = new URL('/v1/file/sync/single', getBaseUrl());
   const { outputDir, skipSave, allowedRoots, ...payload } = body;
-  const { data, headers } = await requestWithAuth((headers) =>
-    fetchBinaryWithHeaders(url.toString(), {
-      method: 'POST',
-      headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    }),
+  const requestInit = (headers: Record<string, string>): RequestInit => ({
+    method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  // HTTP モード (skipSave): fileUrl だけ使うので PDF 本文はダウンロードしない。
+  // sync エンドポイントはメタ情報をレスポンスヘッダーで返すため、ヘッダーのみ取得する。
+  if (skipSave) {
+    const headers = await requestWithAuth((authHeaders) =>
+      fetchHeadersOnly(url.toString(), requestInit(authHeaders)),
+    );
+    return {
+      fileUrl: headers.get('File-URL') ?? undefined,
+      requestId: headers.get('Request-Id') ?? undefined,
+      fileId: parseFileMapping(headers.get('X-File-Mapping'))[0]?.fileId,
+    };
+  }
+
+  // stdio モード: 本文 (PDF バイト列) を取得してローカル保存する。
+  const { data, headers } = await requestWithAuth((authHeaders) =>
+    fetchBinaryWithHeaders(url.toString(), requestInit(authHeaders)),
   );
 
   const fileUrl = headers.get('File-URL') ?? undefined;
   const requestId = headers.get('Request-Id') ?? undefined;
   const fileId = parseFileMapping(headers.get('X-File-Mapping'))[0]?.fileId;
 
-  if (skipSave) {
-    return { data, fileUrl, requestId, fileId };
-  }
   const filePath = await saveTempFile(
     data,
     body.content.fileName,

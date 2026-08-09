@@ -1,137 +1,140 @@
-# reportflow-mcp
+# Re:port Flow MCP
 
 [![npm version](https://img.shields.io/npm/v/reportflow-mcp.svg)](https://www.npmjs.com/package/reportflow-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![smithery badge](https://smithery.ai/badge/re-port-flow/reportflow-mcp)](https://smithery.ai/servers/re-port-flow/reportflow-mcp)
 
-An MCP (Model Context Protocol) server that turns your [ReportFlow](https://re-port-flow.com) templates into PDF reports — invoices, contracts, statements, anything you've designed — straight from Claude, Cursor, VS Code, or any other MCP-compatible AI agent.
+Official display name: **Re:port Flow MCP**. Package and implementation identifier: **`reportflow-mcp`**. Legacy search aliases: **ReportFlow MCP Server** and **ReportFlow**.
 
-- **Hosted remote endpoint**: `https://mcp.re-port-flow.com/mcp` — works from Claude.ai (web) with no npm and no Node.js
-- **npm package**: [`reportflow-mcp`](https://www.npmjs.com/package/reportflow-mcp) — local stdio fallback for Claude Desktop / Claude Code / Cursor / VS Code
-- **Source**: [github.com/re-port-flow/reportflow-mcp](https://github.com/re-port-flow/reportflow-mcp)
-- **MCP Registry**: [`io.github.re-port-flow/reportflow-mcp`](https://registry.modelcontextprotocol.io/v0/servers?search=reportflow)
-- **Smithery**: [smithery.ai/servers/re-port-flow/reportflow-mcp](https://smithery.ai/servers/re-port-flow/reportflow-mcp)
+## Overview
 
-## Why ReportFlow MCP
+An MCP (Model Context Protocol) server that turns your [Re:port Flow](https://re-port-flow.com) templates into PDF reports — invoices, contracts, statements, anything you've designed — straight from Claude or any other MCP-compatible AI agent.
 
-Several MCP servers exist for business-document generation. ReportFlow MCP differentiates itself on three axes.
+## Features
 
-1. **Remote-ready, setup-free** — The hosted endpoint at `https://mcp.re-port-flow.com/mcp` lets you connect from Claude.ai (web) without installing npm or Node.js. Unlike other Japanese 帳票 (chohyo) MCP servers that ship as stdio-only local processes, business users without a dev environment can start using it on day one.
-2. **No-code template design + template marketplace** — Templates are designed in a browser-based GUI editor (Konva-based) with no code. A free [template gallery](https://templates.re-port-flow.com) covers invoices, quotes, receipts, delivery slips, reports and more, so AI agents can invoke ready-made templates from day one. You don't need to author JSON schemas to add templates.
-3. **OAuth 2.0 + Dynamic Client Registration** — Authentication is OAuth 2.0 (Authorization Code + PKCE) with Dynamic Client Registration — no API key is ever handed to the AI client. The security posture matches Claude.ai's first-party Connectors.
-
-## What it does
-
-- Generate PDFs from natural-language requests like *"create an invoice for Acme Corp totalling $330"*
-- Expose your ReportFlow designs and their parameter schemas as MCP **Resources** so the AI can attach them as context
+- Generate PDFs from natural-language requests like *"create an invoice for Acme Corp totalling $300"*
+- Expose your Re:port Flow designs and their parameter schemas directly to the AI as MCP **Resources**
 - Bulk-generate many PDFs and download them as a single ZIP
-- Save outputs to your AI client's workspace folder (stdio mode only — remote mode returns download URLs)
+- Save outputs to whichever workspace folder the user is currently in (Claude Desktop / Claude Code / Cursor / VS Code all supported)
 
 ## Setup
 
-There are two ways to connect. **Remote (HTTP) is recommended** because it works from Claude.ai (web) and has no install step. Use **local (stdio)** if you specifically want generated PDFs saved into your local workspace folder, or if you need to run without a hosted endpoint.
+Re:port Flow MCP runs in two ways — pick whichever matches your client.
 
-### Remote (HTTP) — recommended
+### Remote server (claude.ai / web clients) — Streamable HTTP
 
-No npm, no Node.js. The MCP client opens a browser for OAuth on first connect and tokens are managed server-side.
+Add Re:port Flow as a **custom connector** pointing at the hosted endpoint:
 
-#### Claude Desktop / Claude Code / Cursor
+```
+https://mcp.re-port-flow.com/mcp
+```
 
-Add to `.mcp.json` / `claude_desktop_config.json` / `~/.cursor/mcp.json`:
+In Claude (claude.ai) go to **Settings → Connectors → Add custom connector**
+and paste the URL above. Authentication is handled in-app via OAuth (see
+[Authentication](#authentication)) — nothing to install locally.
+
+### Local server (Claude Desktop / Claude Code / Cursor) — stdio via npx
+
+Add the following to your config file (`.mcp.json`, `claude_desktop_config.json`, `~/.cursor/mcp.json`, etc.):
 
 ```json
 {
   "mcpServers": {
     "reportflow": {
-      "type": "http",
-      "url": "https://mcp.re-port-flow.com/mcp"
+      "command": "npx",
+      "args": ["-y", "reportflow-mcp"]
     }
   }
 }
 ```
+
+That's the whole setup. No env vars, no API keys, no secrets to manage.
 
 #### VS Code (MCP-enabled builds)
 
-VS Code uses `servers` at the top level instead of `mcpServers`. Add to `.vscode/mcp.json`:
-
-```json
-{
-  "servers": {
-    "reportflow": {
-      "type": "http",
-      "url": "https://mcp.re-port-flow.com/mcp"
-    }
-  }
-}
-```
-
-#### Claude Code CLI (one-liner)
-
-```bash
-claude mcp add --transport http reportflow https://mcp.re-port-flow.com/mcp
-```
-
-#### Claude.ai (web)
-
-Settings → **Connectors** → **Add custom connector** → paste `https://mcp.re-port-flow.com/mcp`. The browser opens an OAuth consent screen on first use.
-
-### Local (stdio)
-
-Use this when you want generated PDFs saved into the AI client's workspace folder on your machine, or when you need offline-friendly distribution. Requires Node.js 18+ (auto-fetched by `npx`) and a local browser for first-run OAuth.
-
-#### Claude Desktop / Claude Code / Cursor
-
-```json
-{
-  "mcpServers": {
-    "reportflow": {
-      "command": "npx",
-      "args": ["-y", "reportflow-mcp"]
-    }
-  }
-}
-```
-
-#### VS Code
-
-```json
-{
-  "servers": {
-    "reportflow": {
-      "command": "npx",
-      "args": ["-y", "reportflow-mcp"]
-    }
-  }
-}
-```
+Same JSON in `.vscode/mcp.json`.
 
 ### Requirements
 
-- **Remote**: an MCP-capable AI client (Claude.ai web, Claude Desktop, Cursor, VS Code) + a [ReportFlow](https://re-port-flow.com) account. That's it.
-- **Local**: Node.js 18+ (auto-fetched by `npx`) + a local environment with a browser for the first-run OAuth + a ReportFlow account.
+- **Remote**: an MCP client that supports custom HTTP connectors (e.g. claude.ai). No local install.
+- **Local (stdio)**: Node.js 22+ (auto-fetched by `npx`) and a browser available during the first login.
+- A [Re:port Flow](https://re-port-flow.com) account (either way).
 
-## Usage
+### Supported protocol revisions
 
-### First-run authentication
+Both transports (stdio / Streamable HTTP) serve two MCP protocol generations from a single endpoint:
 
-After reloading the client, ask the AI:
+- **`2026-07-28`** (current) — stateless per-request protocol. Modern clients discover it via `server/discover`; no session header, requests carry their protocol version in `_meta`.
+- **2025-era revisions** (`2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`, `2024-10-07`) — classic `initialize` handshake, kept for backwards compatibility with existing clients (Claude Desktop, claude.ai custom connectors, Cursor, ChatGPT, n8n, …).
 
-> Authenticate with ReportFlow
+Version selection is automatic on both transports: modern clients probe with `server/discover`, legacy clients keep sending `initialize` — no configuration is required on either side, and existing connections keep working unchanged.
 
-In remote mode the browser opens immediately on connect. In stdio mode the AI triggers the OAuth flow on demand. Sign in → pick a workspace → consent, and you're done.
+## Authentication
 
-- **Remote**: tokens are managed server-side and refreshed automatically.
-- **Local**: tokens are stored in the OS keychain (macOS Keychain / Windows Credential Manager / Linux libsecret), with a chmod-0600 file fallback under `$XDG_STATE_HOME/reportflow-mcp/` when libsecret is unavailable.
+### Remote (claude.ai)
 
-### Generate a PDF
+When you add the connector, Claude runs the OAuth flow for you: **Sign in →
+pick a workspace → consent**. Tokens are held by the client — there's no local
+keychain or browser step to manage.
 
-#### Natural language (easiest)
+### Local (stdio)
+
+After reloading the MCP client, ask the AI:
+
+> Authenticate with Re:port Flow
+
+A browser window opens. **Sign in → pick a workspace → consent**, and you're
+done. Tokens are stored in your OS keychain (macOS Keychain / Windows
+Credential Manager / Linux libsecret), with a `chmod-0600` file fallback, and
+are refreshed automatically.
+
+## Usage examples
+
+Each example below is a prompt you can paste as-is; the AI picks the right tools.
+
+### 1. Generate a single PDF (list → schema → generate)
 
 > Using the invoice template, create a PDF for Acme Corp totalling $330.
 
-The AI will look up the template via `list_templates`, fetch its parameter schema with `get_design_parameters`, fill in the values, and call `generate_pdf_sync` — returning either a local file path (stdio) or a download URL (remote).
+The AI lists designs with `list_templates`, fetches the parameter schema with
+`get_design_parameters`, fills in the values, and calls `generate_pdf_sync`.
+- **Remote**: returns a download URL (`fileUrl`).
+- **Local**: also saves the file and returns its absolute path.
 
-#### Slash commands
+### 2. Batch-generate many PDFs
+
+> From the statement template, generate one PDF per customer
+> (Acme $100, Globex $250, Initech $80) and give them to me together.
+
+- **Local (stdio)**: `generate_pdfs_sync` writes a single ZIP to your workspace.
+- **Remote**: `generate_pdfs_async` runs the batch and returns a request id plus
+  a download URL.
+
+### 3. Async generate, then download (local)
+
+> Kick off the contract PDF in the background, then download it once it's ready.
+
+The AI calls `generate_pdf_async` (returns a `requestId` immediately), then
+`download_file` to save the finished PDF. The batch equivalent is
+`generate_pdfs_async` → `download_zip`. These download tools are stdio-only; on
+the remote server the sync/async tools already return a `fileUrl`.
+
+> **Tip — natural-language params:** on a Sampling-capable client you can ask
+> *"draft the params for a $1,000 invoice to A社"* and the AI will call
+> `suggest_params` to turn the brief into a valid `params` object before
+> generating.
+
+### 4. Start from zero templates (gallery → copy → generate)
+
+> I don't have any templates yet — create an invoice PDF for Acme Corp.
+
+When `list_templates` is empty, the AI searches the public template gallery
+with `search_gallery_templates`, shows you the candidates, copies your pick
+into your workspace with `copy_gallery_template`, and then proceeds with the
+normal flow (`get_design_parameters` → `generate_pdf_sync`). The copy always
+lands in the workspace you selected on the OAuth consent screen — the AI
+cannot target any other workspace.
+
+### Slash commands
 
 | Command | Purpose |
 |---|---|
@@ -139,33 +142,31 @@ The AI will look up the template via `list_templates`, fetch its parameter schem
 | `/generate_pdfs` | Recipe for batch PDF generation |
 | `/reportflow_help` | Quick feature tour |
 
-### Where files are saved
+### Where files are saved (local mode)
 
-**Stdio mode**, in order:
-1. Explicit user instruction (e.g. *"save to my Desktop"*)
-2. The currently-open workspace root (Claude Code / Cursor / VS Code via MCP Roots)
-3. The OS temp directory as a fallback
+Output location is resolved in this order:
 
-**Remote mode**: the tool result contains a download URL (`fileUrl`) — the MCP client can't write to your filesystem directly.
+1. Explicit instruction from the user (e.g. *"save to my Desktop"*)
+2. The currently-open workspace root (Claude Code / Cursor / VS Code)
+3. The OS temp directory as fallback
 
 ## Reference
 
 ### Tools (called by the AI)
 
-Every tool now carries [MCP `ToolAnnotations`](https://modelcontextprotocol.io/specification/2025-06-18/server/tools#tool-annotations) — a human-readable `title` plus the `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` flags — so MCP-aware clients can render meaningful tool names and route the right approval prompts.
-
-| Tool | Title | Purpose | Annotations |
-|---|---|---|---|
-| `authenticate` | Authenticate with ReportFlow | First-time / re-auth (opens a browser) | `openWorldHint: true` |
-| `list_templates` | List ReportFlow Templates | List available designs | `readOnlyHint: true`, `idempotentHint: true` |
-| `get_design_parameters` | Get Template Parameters | Parameter schema for one design | `readOnlyHint: true`, `idempotentHint: true` |
-| `generate_pdf_sync` / `_async` | Generate PDF (sync/async) | Generate one PDF | non-readOnly, non-destructive |
-| `generate_pdfs_sync` / `_async` | Generate Multiple PDFs (sync/async) | Batch PDF generation, returns ZIP | non-readOnly, non-destructive |
-| `download_file` (stdio only) | Download Generated File | Save an async-generated PDF to disk | `idempotentHint: true` |
-| `download_zip` (stdio only) | Download Batch ZIP | Save the batch ZIP to disk | `idempotentHint: true` |
-| `suggest_params` | Suggest Parameters via Sampling | Translate a NL brief into `params` JSON (Sampling-capable clients) | `readOnlyHint: true` |
-
-In remote (HTTP) mode the filesystem-writing tools (`download_file`, `download_zip`, stdio-bound `generate_pdf_sync`) are hidden — the remote endpoint can't reach your local disk.
+| Tool | Purpose |
+|---|---|
+| `authenticate` | First-time / re-authentication |
+| `list_templates` | List available designs |
+| `get_design_parameters` | Fetch the parameter schema for a design |
+| `generate_pdf_sync` / `_async` | Generate one PDF (sync returns path; async returns request ID) |
+| `generate_pdfs_sync` / `_async` | Generate many PDFs (returns a ZIP) |
+| `download_file` / `download_zip` | Download artifacts produced by async tools |
+| `suggest_params` | Translate a natural-language brief into a `params` JSON via MCP Sampling (requires a Sampling-capable client) |
+| `search` / `fetch` | ChatGPT connector convention tools (single string argument), **closed-world** (`openWorldHint: false`) — they only read your own workspace's internal template catalog, never the web. `search` resolves templates by name; `fetch` returns a template's parameter schema by id. Thin wrappers over `list_templates` / `get_design_parameters` so ChatGPT (incl. Plus/Pro without Developer Mode) can discover and inspect templates. |
+| `search_gallery_templates` | Search the **public template gallery** (no auth needed) by keyword/category. Returns candidate templates that are *not yet* in your workspace — their `slug` cannot be used for PDF generation until copied. |
+| `get_gallery_template` | Fetch full details of one public gallery template by `slug` (no auth needed) |
+| `copy_gallery_template` | **Write tool.** Copy a gallery template into the workspace you authorized (the target workspace is fixed by your access token and cannot be passed as an argument). Returns `designId` + `version` ready for `get_design_parameters` / `generate_pdf_sync`. Each call creates a new design — it never reuses a previous copy. |
 
 ### Resources (attachable as AI context)
 
@@ -174,7 +175,7 @@ In remote (HTTP) mode the filesystem-writing tools (`download_file`, `download_z
 | `reportflow://designs` | List of available designs |
 | `reportflow://designs/{designId}/parameters` | Parameter schema for one design |
 | `reportflow://errors` | Catalog of error messages from the Content Service |
-| `reportflow://server-info` | Server feature overview & version |
+| `reportflow://server-info` | Server feature overview |
 
 ### Prompts (slash-command recipe cards)
 
@@ -184,11 +185,39 @@ In remote (HTTP) mode the filesystem-writing tools (`download_file`, `download_z
 
 | Symptom | Fix |
 |---|---|
-| Error containing `re-authentication required` | Ask the AI: *"re-authenticate with ReportFlow"* |
-| `npx` cannot find the package (stdio) | `npm cache clean --force` then retry |
-| No keychain available on Linux (stdio) | Falls back automatically to a chmod-0600 file under `$XDG_STATE_HOME/reportflow-mcp/` |
-| Browser cannot open over SSH / remote shell (stdio) | Authenticate **once on a local machine**; afterwards the cached token works on remote hosts |
-| `Rate limit exceeded` (429) | Per-workspace rate limit. Wait the seconds reported in the `Retry-After` header before retrying. Prefer async endpoints for batch jobs. |
+| Error containing `re-authentication required` | Ask the AI: *"re-authenticate with Re:port Flow"* |
+| `npx` cannot find the package | `npm cache clean --force` then retry |
+| No keychain available on Linux | Falls back automatically to a chmod-0600 file under `$XDG_STATE_HOME/reportflow-mcp/` |
+| Browser cannot open over SSH / remote shell | Authenticate **once on a local machine**; afterwards the cached token works on remote hosts |
+
+## Privacy
+
+Re:port Flow MCP is a thin client: it forwards your requests to your own
+Re:port Flow account and returns the generated PDFs. It does not sell or share
+your data with third parties. Authentication tokens are stored locally (OS
+keychain, or a `chmod-0600` file fallback) and are sent only to Re:port Flow's
+own services — during the OAuth login, and as a `Bearer` credential on each
+authenticated API call (listing templates, generating or downloading PDFs).
+They are never shared with any third party.
+
+For the full privacy policy — what is collected, how long it is retained, and
+how it is handled — see: **[lp.re-port-flow.com](https://lp.re-port-flow.com)**
+
+## Security
+
+The hosted endpoint validates the `Host` header (DNS-rebinding protection) and
+rejects structurally invalid `Origin` headers with `403 Forbidden`, per the MCP
+Streamable HTTP specification's Security requirements. Authentication is
+Bearer-token only — no cookies, and CORS never allows credentials. The full
+policy and its threat model are documented in
+[docs/security.md](./docs/security.md) (Japanese).
+
+## Support
+
+Need help, found a bug, or have a directory-review question?
+
+- Re:port Flow (privacy & support): https://lp.re-port-flow.com
+- GitHub Issues: https://github.com/re-port-flow/reportflow-mcp/issues
 
 ## License
 
@@ -196,8 +225,7 @@ MIT — see [LICENSE](./LICENSE).
 
 ## Links
 
-- ReportFlow: https://re-port-flow.com
-- Official docs: https://doc.re-port-flow.com/docs/integrations/mcp
-- Template gallery: https://templates.re-port-flow.com
+- Re:port Flow: https://re-port-flow.com
+- Privacy & Support: https://lp.re-port-flow.com
 - npm: https://www.npmjs.com/package/reportflow-mcp
 - Issues: https://github.com/re-port-flow/reportflow-mcp/issues

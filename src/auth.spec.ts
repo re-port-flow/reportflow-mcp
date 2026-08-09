@@ -24,10 +24,12 @@ import {
   AuthRequiredError,
   authorize,
   getAuthHeaders,
+  getAuthWorkspaceId,
   requestWithAuth,
   clearAuth,
 } from './auth.js';
 import { HttpError } from './http.js';
+import { runWithHttpAuth } from './auth-context.js';
 
 const mockFetch = jest.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
@@ -173,6 +175,103 @@ describe('requestWithAuth', () => {
   });
 });
 
+describe('HTTP mode (per-request Bearer via AsyncLocalStorage)', () => {
+  it('getAuthHeaders uses the per-request token and never touches the store', async () => {
+    const headers = await runWithHttpAuth({ accessToken: 'http-tok' }, () =>
+      getAuthHeaders(),
+    );
+    expect(headers).toEqual({ Authorization: 'Bearer http-tok' });
+    expect(mockStore.load).not.toHaveBeenCalled();
+  });
+
+  it('requestWithAuth runs fn with the per-request bearer', async () => {
+    const fn = jest.fn().mockResolvedValue('ok');
+    const result = await runWithHttpAuth({ accessToken: 'http-tok' }, () =>
+      requestWithAuth(fn),
+    );
+    expect(result).toEqual('ok');
+    expect(fn).toHaveBeenCalledWith({ Authorization: 'Bearer http-tok' });
+  });
+
+  it('requestWithAuth maps an upstream 401 to AuthRequiredError (no local refresh)', async () => {
+    const fn = jest.fn().mockRejectedValue(new HttpError(401, 'Unauthorized'));
+    await expect(
+      runWithHttpAuth({ accessToken: 'http-tok' }, () => requestWithAuth(fn)),
+    ).rejects.toBeInstanceOf(AuthRequiredError);
+    // HTTP モードでは refresh はクライアント側の責務なのでローカル store は触らない
+    expect(mockStore.load).not.toHaveBeenCalled();
+  });
+
+  it('requestWithAuth rethrows non-401 errors in HTTP mode', async () => {
+    const fn = jest.fn().mockRejectedValue(new HttpError(500, 'Boom'));
+    await expect(
+      runWithHttpAuth({ accessToken: 'http-tok' }, () => requestWithAuth(fn)),
+    ).rejects.toThrow('Boom');
+  });
+});
+
+describe('getAuthWorkspaceId', () => {
+  const jwtWithWorkspace = (workspaceId: string): string => {
+    const payload = Buffer.from(
+      JSON.stringify({ workspace_id: workspaceId }),
+    ).toString('base64url');
+    return `header.${payload}.sig`;
+  };
+
+  it('HTTP モード: per-request Bearer の JWT から workspace_id を取り出し store を触らない', async () => {
+    const wsId = await runWithHttpAuth(
+      { accessToken: jwtWithWorkspace('ws-http') },
+      () => getAuthWorkspaceId(),
+    );
+    expect(wsId).toEqual('ws-http');
+    expect(mockStore.load).not.toHaveBeenCalled();
+  });
+
+  it('stdio モード: 保存済みトークンの workspaceId を返す', async () => {
+    mockStore.load.mockResolvedValueOnce(baseTokens({ workspaceId: 'ws-saved' }));
+    const wsId = await getAuthWorkspaceId();
+    expect(wsId).toEqual('ws-saved');
+  });
+
+  it('stdio モード: workspaceId 未保持なら access token の JWT から復元する', async () => {
+    mockStore.load.mockResolvedValueOnce(
+      // 旧バージョンが保存した workspaceId 無しの TokenSet を再現
+      baseTokens({ workspaceId: undefined, accessToken: jwtWithWorkspace('ws-jwt') }),
+    );
+    const wsId = await getAuthWorkspaceId();
+    expect(wsId).toEqual('ws-jwt');
+  });
+
+  it('stdio モード: トークン未保存なら AuthRequiredError を投げる', async () => {
+    mockStore.load.mockResolvedValueOnce(null);
+    await expect(getAuthWorkspaceId()).rejects.toBeInstanceOf(AuthRequiredError);
+  });
+});
+
+describe('JWT workspace extraction', () => {
+  it('extracts workspace_id from a valid JWT access token payload', async () => {
+    const payload = Buffer.from(
+      JSON.stringify({ workspace_id: 'ws-123' }),
+    ).toString('base64url');
+    const jwt = `header.${payload}.sig`;
+    mockStartCallbackServer.mockResolvedValueOnce({ code: 'c' });
+    mockOpen.mockResolvedValueOnce(undefined);
+    mockFetch.mockResolvedValueOnce(tokenJsonResponse(jwt));
+    const result = await authorize();
+    expect(result.workspaceId).toEqual('ws-123');
+  });
+
+  it('leaves workspaceId undefined when the JWT payload is not valid JSON', async () => {
+    const payload = Buffer.from('not-json').toString('base64url');
+    const jwt = `header.${payload}.sig`;
+    mockStartCallbackServer.mockResolvedValueOnce({ code: 'c' });
+    mockOpen.mockResolvedValueOnce(undefined);
+    mockFetch.mockResolvedValueOnce(tokenJsonResponse(jwt));
+    const result = await authorize();
+    expect(result.workspaceId).toBeUndefined();
+  });
+});
+
 describe('authorize (PKCE flow)', () => {
   it('runs full PKCE flow and saves tokens', async () => {
     mockStartCallbackServer.mockResolvedValueOnce({ code: 'authcode' });
@@ -237,6 +336,13 @@ describe('config validation', () => {
     await authorize();
     const url = mockOpen.mock.calls[0][0];
     expect(url).toContain('client_id=reportflow-mcp');
+  });
+  it('throws when REPORTFLOW_CALLBACK_PORT is not a positive integer', async () => {
+    process.env['REPORTFLOW_CALLBACK_PORT'] = 'not-a-port';
+    await expect(authorize()).rejects.toThrow(
+      'REPORTFLOW_CALLBACK_PORT must be a positive integer',
+    );
+    delete process.env['REPORTFLOW_CALLBACK_PORT'];
   });
   it('never sends client_secret in token request body (Public client only)', async () => {
     mockStartCallbackServer.mockResolvedValueOnce({ code: 'c' });
