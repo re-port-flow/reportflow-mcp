@@ -66,6 +66,7 @@ every call creates a new design.
 
 - **Agent guide** — protocol, tools, OAuth, model guidance: https://github.com/re-port-flow/reportflow-mcp/blob/main/agents.md
 - **Runnable examples** — Python, JavaScript, curl: https://github.com/re-port-flow/reportflow-mcp/tree/main/examples
+- **Developer docs** — https://doc.re-port-flow.com
 - **Source** — https://github.com/re-port-flow/reportflow-mcp
 - **npm** — https://www.npmjs.com/package/reportflow-mcp
 - **Product** — https://re-port-flow.com
