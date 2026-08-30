@@ -1,0 +1,2 @@
+# Verified against huggingface_hub 1.29.0 (2026-08-30).
+huggingface_hub[mcp]>=1.27.0
