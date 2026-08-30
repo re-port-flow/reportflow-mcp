@@ -43,6 +43,28 @@ jobs:
       - name: Run Tests
         run: yarn test --silent
 
+  # npm publish するのはこのリポジトリで、公開されるのは dist/ を固めた tarball。
+  # ユニットテストも e2e も in-process で回るため、ビルド・梱包の経路でだけ壊れる
+  # 事故 (過去に shebang 欠落が 2 回) は test ジョブでは検出できない。
+  packaging-smoke:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: ./
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node v22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: 'yarn'
+          cache-dependency-path: './yarn.lock'
+      - name: Install modules
+        run: yarn install --frozen-lockfile
+      - name: Run packaging smoke test
+        run: yarn test:packaging
+
   guard:
     runs-on: ubuntu-latest
     steps:
