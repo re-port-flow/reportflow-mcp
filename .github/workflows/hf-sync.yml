@@ -1,0 +1,206 @@
+# Publish the Hugging Face organization card to the Hub.
+#
+# `hf/README.md` in this repository is the source of truth for
+# https://huggingface.co/spaces/reportflow/README — the Static Space whose
+# README.md renders as the card on https://huggingface.co/reportflow. This
+# workflow copies that one file into the Space and pushes it.
+#
+# WHY A SINGLE WORKFLOW RATHER THAN `workflow_run` ON THE EXISTING CI:
+#   `workflow_run` only fires after another workflow finishes, so a manual
+#   `workflow_dispatch` here could never be gated by it — and manual dispatch is
+#   exactly how this is first exercised. ci.yml also runs on pull_request only,
+#   so it never fires on the push that triggers this. Running the checks as a
+#   job in this workflow gates push and manual runs identically.
+#
+# WHAT IS AND IS NOT SYNCED:
+#   Only `hf/README.md` -> the Space's `README.md`. The Space's `index.html` is
+#   left alone; it is owned by the Space, not by this repository.
+#
+# ROLLBACK:
+#   The Space is a git repository. To undo a bad sync:
+#     git clone https://huggingface.co/spaces/reportflow/README
+#     cd README && git revert <sha> && git push
+#   Or restore the previous card from the Space's commit history in the Hub UI.
+#   Reverting there is safe: the next run of this workflow will re-apply
+#   `hf/README.md`, so fix the file in this repository too, or the revert is
+#   undone on the next push to main.
+#
+# SETUP: `HF_TOKEN` must exist as a repository Actions secret — a fine-grained
+# Hugging Face token with write access to the `reportflow/README` Space only.
+# Until it is registered, the sync job fails on purpose with a clear message.
+name: hf-sync
+
+on:
+  push:
+    # The repository's default branch. A name that does not exist here makes the
+    # trigger silently never fire, so keep it in step with the release branch.
+    branches: [main]
+    paths:
+      - 'hf/**'
+      - '.github/workflows/hf-sync.yml'
+      # README.md and agents.md are not copied to the Space, so a change to them
+      # produces a run that finds no diff and pushes nothing. They are listed
+      # anyway: if the sync is ever widened to more files, the trigger already
+      # covers them instead of silently going stale.
+      - 'README.md'
+      - 'agents.md'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Show the diff without pushing to the Hub'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Never let two syncs race for the Space's git history.
+concurrency:
+  group: hf-sync
+  cancel-in-progress: false
+
+env:
+  HF_SPACE_URL: https://huggingface.co/spaces/reportflow/README
+
+jobs:
+  # Gate: lint, typecheck, unit tests and a security check must pass before
+  # anything reaches the Hub. Script names mirror `package.json`; if they are
+  # renamed this job fails and the sync is skipped, which is the safe direction.
+  verify:
+    name: lint / test / security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: yarn
+          cache-dependency-path: ./yarn.lock
+      - name: Install modules
+        run: yarn install --frozen-lockfile
+      - name: Lint
+        run: yarn lint --max-warnings 0
+      - name: Typecheck
+        run: yarn build
+      - name: Unit tests
+        run: yarn test:unit --silent
+      # Blocking on every advisory would wedge a docs publish on an unrelated
+      # transitive dependency, so only critical ones stop it.
+      - name: Dependency audit (critical only)
+        run: |
+          # yarn v1's --level filters what is printed, NOT the exit code: that
+          # is a bitmask of every severity found (1 info, 2 low, 4 moderate,
+          # 8 high, 16 critical). A single Low advisory therefore exits 2, so
+          # running the command bare would block every sync — the exact
+          # wedging this step is meant to avoid. Test the critical bit only.
+          yarn audit --level critical --groups dependencies && code=0 || code=$?
+          echo "yarn audit exit code: $code"
+          if [ "$(( code & 16 ))" -ne 0 ]; then
+            echo '::error::Critical vulnerability in dependencies — refusing to publish.'
+            exit 1
+          fi
+      # The payload is about to become a public web page, so check it for
+      # credential-shaped strings rather than trusting review alone.
+      - name: Secret scan of the published payload
+        run: |
+          # Establish that there is something to scan first: grep over a missing
+          # directory exits 2, which an `if` reads as "no match" — reporting a
+          # clean scan having looked at nothing.
+          [ -d hf ] || { echo '::error::hf/ is missing — nothing to publish.'; exit 1; }
+          count=$(find hf -type f | wc -l)
+          [ "$count" -gt 0 ] || { echo '::error::hf/ contains no files.'; exit 1; }
+          if grep -rEn 'hf_[A-Za-z0-9]{20,}|(ghp|gho|ghs|github_pat)_[A-Za-z0-9_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|eyJhbGciOi[A-Za-z0-9._-]{20,}' hf/; then
+            echo '::error::Credential-shaped string found in hf/ — refusing to publish.'
+            exit 1
+          fi
+          echo "No credential-shaped strings in hf/ ($count file(s) scanned)."
+
+  sync:
+    name: push to Hugging Face Space
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A Space whose README.md has no valid YAML frontmatter goes into "config
+      # error" and the organization card disappears. Check before pushing, not
+      # after.
+      - name: Validate Space frontmatter
+        run: |
+          file=hf/README.md
+          [ -f "$file" ] || { echo "::error::$file is missing."; exit 1; }
+          head -1 "$file" | grep -qx -- '---' || {
+            echo "::error::$file must start with a YAML frontmatter delimiter (---)."; exit 1; }
+          # A closing '---' must exist too. Without this check an unterminated
+          # block makes the whole document count as frontmatter, so keys sitting
+          # in the prose would satisfy the checks below while the Space still
+          # receives malformed frontmatter.
+          awk 'NR>1 && $0=="---" {found=1; exit} END {exit !found}' "$file" || {
+            echo "::error::$file frontmatter is never closed by a second ---."; exit 1; }
+          # Frontmatter is everything up to the second '---'.
+          front=$(awk 'NR==1 && $0=="---" {next} $0=="---" {exit} {print}' "$file")
+          missing=
+          for key in title emoji colorFrom colorTo sdk app_file pinned; do
+            printf '%s\n' "$front" | grep -qE "^${key}:" || missing="$missing $key"
+          done
+          [ -z "$missing" ] || { echo "::error::frontmatter is missing:$missing"; exit 1; }
+          printf '%s\n' "$front" | grep -qE '^sdk:[[:space:]]*static$' || {
+            echo "::error::the Space is a Static Space; frontmatter must keep 'sdk: static'."; exit 1; }
+          printf '%s\n' "$front" | grep -qE '^app_file:[[:space:]]*index\.html$' || {
+            echo "::error::frontmatter must keep 'app_file: index.html' (the Space owns index.html)."; exit 1; }
+          echo 'Frontmatter OK.'
+
+      - name: Check HF_TOKEN is configured
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo '::error::HF_TOKEN is not set. Add a fine-grained Hugging Face token with write access to the reportflow/README Space under Settings → Secrets and variables → Actions.'
+            exit 1
+          fi
+
+      # Cloned anonymously: the Space is public, and this keeps the token out of
+      # .git/config. It is supplied only on the push below.
+      # Full clone, not --depth 1: pushing from a shallow clone is rejected by
+      # some git servers, and the Space holds two files.
+      - name: Clone the Space
+        run: git clone "$HF_SPACE_URL" space
+
+      - name: Stage the card
+        id: stage
+        run: |
+          cp hf/README.md space/README.md
+          cd space
+          # --porcelain rather than `git diff`, so a Space that somehow has no
+          # committed README.md is seen as a change instead of as "no diff".
+          if [ -z "$(git status --porcelain -- README.md)" ]; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            echo 'Space README already matches hf/README.md — nothing to push.'
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+            git --no-pager diff -- README.md
+          fi
+
+      - name: Push to the Hub
+        if: steps.stage.outputs.changed == 'true' && inputs.dry_run != true
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        working-directory: space
+        run: |
+          git config user.name 'reportflow-mcp bot'
+          git config user.email 'noreply@re-port-flow.com'
+          git add README.md
+          git commit -m "Sync organization card from reportflow-mcp@${GITHUB_SHA:0:7}"
+          # The token is an Actions secret, so GitHub masks it in the log; keep
+          # it off .git/config by passing the URL only to this one command.
+          git push "https://user:${HF_TOKEN}@huggingface.co/spaces/reportflow/README" HEAD:main
+
+      - name: Summary
+        run: |
+          if [ '${{ steps.stage.outputs.changed }}' != 'true' ]; then
+            echo 'No change — Space already up to date.' >> "$GITHUB_STEP_SUMMARY"
+          elif [ '${{ inputs.dry_run }}' = 'true' ]; then
+            echo 'Dry run — the diff above was **not** pushed.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Pushed the organization card to ${HF_SPACE_URL}" >> "$GITHUB_STEP_SUMMARY"
+          fi
