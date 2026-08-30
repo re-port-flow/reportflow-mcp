@@ -24,10 +24,14 @@ rpc() {
   local body="$1"
   local -a auth=()
   [ -n "$TOKEN" ] && auth=(-H "Authorization: Bearer $TOKEN")
+  # `${auth[@]+"${auth[@]}"}` rather than a plain `"${auth[@]}"`: under `set -u`
+  # bash 3.2 — still what /bin/bash is on macOS — treats an empty array as an
+  # unbound variable and aborts. Without a token that is the very first call,
+  # so the unauthenticated path this script advertises would never run.
   curl -sS -X POST "$MCP_URL" \
     -H 'Content-Type: application/json' \
     -H 'Accept: application/json, text/event-stream' \
-    "${auth[@]}" \
+    ${auth[@]+"${auth[@]}"} \
     -d "$body" | sed -n 's/^data: //p'
 }
 
@@ -63,8 +67,13 @@ if [ -z "$TOKEN" ]; then
   exit 0
 fi
 
-# search_gallery_templates is read-only, so it is a safe smoke test. Do not use
-# copy_gallery_template for this: it creates a new design on every call.
+# list_templates is read-only and workspace-scoped, which is what makes it a
+# real check of the token: the gallery tools answer an invalid token with real
+# data, because the API behind them takes no credentials. (And never use
+# copy_gallery_template as a smoke test: it creates a design on every call.)
+#
+# An invalid token does not come back as HTTP 401 here — the request succeeds
+# and the failure is reported as a tool error, hence the isError branch below.
 rpc '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
-  "name":"search_gallery_templates","arguments":{"query":"invoice"}}}' |
-  jq -r 'if .result.isError then "ERROR: " else "" end + (.result.content[]? | select(.type=="text") | .text)'
+  "name":"list_templates","arguments":{}}}' |
+  jq -r 'if .result.isError then "ERROR (token rejected?): " else "" end + (.result.content[]? | select(.type=="text") | .text)'

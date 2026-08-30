@@ -36,13 +36,14 @@ const { tools } = await client.listTools();
 console.log(`${tools.length} tools:`, tools.map((t) => t.name).join(', '));
 
 if (token) {
-  // Gallery search is a read-only tool, so it is safe to run as a smoke test —
-  // unlike copy_gallery_template, which creates a new design on every call.
-  const result = await client.callTool({
-    name: 'search_gallery_templates',
-    arguments: { query: 'invoice' },
-  });
-  console.log('search_gallery_templates:', result.isError ? 'ERROR' : 'ok');
+  // list_templates is read-only and workspace-scoped, which makes it the right
+  // smoke test: the gallery tools would answer a bogus token with real data
+  // (their REST API takes no credentials), so they prove nothing about it.
+  // Not copy_gallery_template either — that creates a design on every call.
+  const result = await client.callTool({ name: 'list_templates', arguments: {} });
+  // A rejected token does NOT come back as an HTTP 401 here. The call succeeds
+  // and the failure is inside the result, so check isError before believing it.
+  console.log('list_templates:', result.isError ? 'ERROR (token rejected?)' : 'ok');
   for (const part of result.content ?? []) {
     if (part.type === 'text') console.log(part.text);
   }

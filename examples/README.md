@@ -38,15 +38,22 @@ export RF_ACCESS_TOKEN="$(./oauth/get-token.sh | tail -1)"
 
 ## Verification status
 
-Checked against production on 2026-08-30 (Python `huggingface_hub` 1.29.0,
-`@modelcontextprotocol/sdk` 1.30.0, `@huggingface/mcp-client` 0.2.3): every
-example connects and lists all 10 tools, and the unauthenticated paths return
-the documented `401`. The authenticated `tools/call` and model-turn paths need
-an interactive browser login, so they are covered by the proof of concept
-recorded in the task tracker rather than by an automated run here.
+Run against production on 2026-08-30 (`@modelcontextprotocol/sdk` 1.30.0,
+`@huggingface/mcp-client` 0.2.3, Node 22.23.1, macOS `/bin/bash` 3.2.57):
 
-The examples are documentation, not part of the published npm package, and are
-not exercised by CI.
+| Example | Ran | Result |
+|---|---|---|
+| `curl/mcp-calls.sh` | ✅ | `initialize` returns `reportflow-mcp 1.4.0` with `instructions`; `tools/list` returns all 10 tools; with no token, `tools/call` returns `401` plus the RFC 9728 `WWW-Authenticate` header. Exit 0. |
+| `javascript/mcp-sdk-client.mjs` | ✅ | Connects, lists all 10 tools. With an invalid token, `list_templates` comes back as a tool error — which is the point of using it as the smoke test. Exit 0. |
+| `javascript/hf-mcp-client.mjs` | ✅ | Connects and lists all 10 tools with no `HF_TOKEN` (a model turn needs one). Exit 0. |
+| `python/hf_mcp_client.py` | ⚠️ compile-checked only | `python -m py_compile` passes. Not executed: it needs Python 3.10+ for its `str \| None` annotations, and the checking machine had 3.9. Its API shape comes from the proof of concept in the task tracker. |
+| `oauth/get-token.sh` | ⚠️ partly | `bash -n` passes and the endpoints, PKCE method, auth method, grants and scopes it uses were each confirmed against the live authorization-server metadata. The flow itself was not run end to end: it registers a client and needs an interactive browser login. |
+
+The authenticated `tools/call` and model-turn paths need a real token, so they
+are covered by that proof of concept rather than by a run here.
+
+The examples are documentation. They are excluded from the published npm
+package (`files` in the root `package.json`) and are not exercised by CI.
 
 ## House rules for anything you build on these
 

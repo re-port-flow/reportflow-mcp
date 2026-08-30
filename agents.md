@@ -54,7 +54,7 @@ walks the OAuth flow: [`examples/`](./examples/).
 
 ## What works without a token
 
-| Call | Unauthenticated |
+| Call | No `Authorization` header |
 |---|---|
 | `initialize` | ✅ 200 |
 | `tools/list` | ✅ 200 — all 10 tools, with full schemas |
@@ -68,15 +68,30 @@ WWW-Authenticate: Bearer realm="reportflow-mcp",
   resource_metadata="https://mcp.re-port-flow.com/.well-known/oauth-protected-resource"
 ```
 
-Note a discrepancy you will see in the tool descriptions: `search_gallery_templates`
-and `get_gallery_template` are described as needing no authentication. That is
-true of the underlying Re:port Flow REST API, but the MCP endpoint gates *every*
-`tools/call` behind a Bearer token. Treat a token as mandatory for all tool
-execution.
+### The header is required; its value is only checked downstream
 
-Sending a syntactically valid but invalid token does not fail `tools/list` —
-it is simply not checked there. Do not use a successful `tools/list` as
-evidence that your token works; call a tool.
+That `401` is raised by the endpoint's own gate, which looks for a Bearer
+header and does not verify it. What happens next depends on the tool
+(measured against production on 2026-08-30 with a deliberately invalid token):
+
+| `tools/call` with a **bad** token | Result |
+|---|---|
+| `search_gallery_templates`, `get_gallery_template` | `200` and real data — the public gallery API behind them takes no credentials, so any string gets you in |
+| every workspace tool (`list_templates`, `generate_pdf_sync`, …) | `200` at the HTTP layer, but the JSON-RPC result is a tool error: *"再認証が必要です: 上流 API が 401"* (re-authentication required) |
+
+Two consequences worth building around:
+
+- **A gallery call is not proof of a token.** Neither is `tools/list`, which
+  never looks at the header at all. To find out whether a token is good, call a
+  workspace tool — `list_templates` is read-only and the cheapest of them.
+- **An expired token does not resurface as an HTTP `401`.** It comes back as a
+  successful response carrying a tool error, so a client that only branches on
+  the status code will read a dead token as a working one. Inspect the result.
+
+This also explains a discrepancy in the tool descriptions: the gallery tools say
+they need no authentication. That is true of the REST API underneath them, and
+almost true here — you still have to send *some* Bearer header to get past the
+endpoint gate.
 
 ## Tools
 
@@ -222,7 +237,8 @@ routing failure that never reaches this server. `MCPClient` works.
 | Symptom | Cause | Fix |
 |---|---|---|
 | `406` `Client must accept both application/json and text/event-stream` | `Accept` header too narrow | Send `Accept: application/json, text/event-stream` |
-| `401` `invalid_token` on every `tools/call` | No token, or expired | Run the OAuth flow; refresh with the `refresh_token` grant |
+| `401` `invalid_token` on every `tools/call` | No `Authorization` header at all | Send `Authorization: Bearer <token>` |
+| `200`, but the tool result reads *"再認証が必要です: 上流 API が 401"* | The token was sent but is invalid or expired — this path does **not** return HTTP `401` | Refresh with the `refresh_token` grant, or re-run the OAuth flow |
 | `invalid_target: resource parameter mismatch (RFC 8707)` | `resource` sent to `/authorize` but not to `/token` | Send the same `resource` to both |
 | `405 Method not allowed` | `GET`/`DELETE` on `/mcp`, or a legacy SSE-only client | Use Streamable HTTP `POST` |
 | `Illegal header value b'Bearer '` (httpx) | Building the header from an unset env var | Only set `Authorization` when a token is present |
