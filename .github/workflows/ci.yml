@@ -85,3 +85,8 @@ jobs:
       # 再発するので落とす。
       - name: Ensure Markdown links resolve
         run: node scripts/check-markdown-links.mjs
+      # 同型の破損: package.json だけが同期され、参照先 (scripts/ 等) が同期されないと
+      # エントリだけが残って実行不能になる。CI がその script を呼んでいなければ
+      # 緑のまま素通りするので、参照の実在をここで見る。
+      - name: Ensure package.json script references resolve
+        run: node scripts/check-package-scripts.mjs
