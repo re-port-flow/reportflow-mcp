@@ -10,10 +10,14 @@
  * 6. tool 数 / 必須 tool 名を検証
  * 7. teardown
  *
- * なぜ要るか: npm publish するのはこのリポジトリで、公開されるのは `dist/` を固めた
- * tarball であって `src/` ではない。ユニットテストも e2e も in-process で回るので、
- * 「ビルド・梱包の経路でだけ壊れる」種類の事故は素通りする。実際に shebang が欠けた
- * まま npm へ出た事故が 2 回起きている (PR #4 / PR #9)。この検査はそこを塞ぐ。
+ * なぜ要るか: npm へ公開されるのは `dist/` を固めた tarball であって `src/` ではない。
+ * ユニットテストも e2e も in-process で回るので、「ビルド・梱包の経路でだけ壊れる」
+ * 種類の事故は素通りする。実際に shebang が欠けたまま npm へ出た事故が 2 回起きている
+ * (2 回目が PRJ-3-523)。この検査はそこを塞ぐ。
+ *
+ * このファイルは PRIVATE (monepla/report-mcp) と PUBLIC (re-port-flow/reportflow-mcp)
+ * の両方に同一内容で置く。PUBLIC は PRIVATE のリリース断面が手動同期されたもので、
+ * 片方だけを直すと次の同期で上書きされて元に戻る。差を作らないこと。
  */
 
 import { execFileSync, spawn } from 'node:child_process';
