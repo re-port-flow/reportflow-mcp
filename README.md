@@ -208,7 +208,9 @@ how it is handled — see: **[lp.re-port-flow.com](https://lp.re-port-flow.com)*
 The hosted endpoint validates the `Host` header (DNS-rebinding protection) and
 rejects structurally invalid `Origin` headers with `403 Forbidden`, per the MCP
 Streamable HTTP specification's Security requirements. Authentication is
-Bearer-token only — no cookies, and CORS never allows credentials.
+Bearer-token only — no cookies, and CORS never allows credentials. The full
+policy and its threat model are documented in
+[docs/security.md](./docs/security.md) (Japanese).
 
 ## Support
 
