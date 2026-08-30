@@ -49,7 +49,8 @@
     "test:unit": "jest --selectProjects unit",
     "test:e2e": "jest --selectProjects e2e",
     "test:coverage": "jest --selectProjects unit --coverage",
-    "test:packaging": "node scripts/packaging-smoke.mjs"
+    "test:packaging": "node scripts/packaging-smoke.mjs",
+    "lint:links": "node scripts/check-markdown-links.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/node": "^2.0.0",

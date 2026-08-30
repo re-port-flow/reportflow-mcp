@@ -54,3 +54,12 @@ jobs:
             echo "::error::Infra/secret files must never exist in the public repo:"; echo "$hits"; exit 1
           fi
           echo "guard passed: no infra/secret files tracked"
+      - name: Setup Node v22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+      # PRIVATE から同期した README が PRIVATE にしか無いパス (docs/ 等) を
+      # 参照したままだと、この公開リポジトリでは 404 になる。人手の確認では
+      # 再発するので落とす。
+      - name: Ensure Markdown links resolve
+        run: node scripts/check-markdown-links.mjs
