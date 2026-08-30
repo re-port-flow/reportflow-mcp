@@ -150,6 +150,36 @@ Output location is resolved in this order:
 2. The currently-open workspace root (Claude Code / Cursor / VS Code)
 3. The OS temp directory as fallback
 
+## Build your own agent
+
+The setup above assumes an MCP client that manages its own connection and login.
+If you are writing the agent yourself — Hugging Face Agents, a custom tool loop,
+or raw HTTP — the hosted endpoint is open to you directly:
+
+```
+https://mcp.re-port-flow.com/mcp
+```
+
+- **[agents.md](./agents.md)** — the agent-facing guide: transport details, the
+  ten HTTP tools, the OAuth flow, model selection, and the rules an agent has to
+  follow (never invent business data; `copy_gallery_template` is not idempotent;
+  `passthrough` values end up in the PDF's metadata).
+- **[examples/](./examples/)** — runnable Python, JavaScript and curl clients,
+  plus a script that walks the OAuth flow and prints an access token.
+
+`initialize` and `tools/list` work without credentials, so you can discover the
+toolset before wiring up authentication. Every `tools/call` needs a Bearer token.
+
+### Hugging Face
+
+Re:port Flow is on the Hub at
+**[huggingface.co/reportflow](https://huggingface.co/reportflow)**. The Hugging
+Face SDKs have no MCP OAuth flow of their own, so fetch a token once with
+[`examples/oauth/get-token.sh`](./examples/oauth/get-token.sh) and inject it as
+an `Authorization` header — see
+[`examples/python/hf_mcp_client.py`](./examples/python/hf_mcp_client.py) and
+[`examples/javascript/hf-mcp-client.mjs`](./examples/javascript/hf-mcp-client.mjs).
+
 ## Reference
 
 ### Tools (called by the AI)
@@ -228,4 +258,7 @@ MIT — see [LICENSE](./LICENSE).
 - Re:port Flow: https://re-port-flow.com
 - Privacy & Support: https://lp.re-port-flow.com
 - npm: https://www.npmjs.com/package/reportflow-mcp
+- Hugging Face: https://huggingface.co/reportflow
+- Agent guide: [agents.md](./agents.md)
+- Examples: [examples/](./examples/)
 - Issues: https://github.com/re-port-flow/reportflow-mcp/issues

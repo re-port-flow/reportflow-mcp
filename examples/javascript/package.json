@@ -1,0 +1,17 @@
+{
+  "name": "reportflow-mcp-examples-js",
+  "private": true,
+  "type": "module",
+  "description": "Runnable JavaScript examples for the hosted Re:port Flow MCP server",
+  "scripts": {
+    "start": "node mcp-sdk-client.mjs",
+    "start:hf": "node hf-mcp-client.mjs"
+  },
+  "dependencies": {
+    "@huggingface/mcp-client": "^0.2.3",
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

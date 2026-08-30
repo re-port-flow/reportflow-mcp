@@ -59,3 +59,10 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 .Codex/
 .codex/
 .claude/
+
+# Python examples under examples/ leave bytecode caches behind when run.
+__pycache__/
+
+# examples/javascript is documentation, not a shipped package: running it means
+# `npm install`, and the lockfile that produces is not something to track.
+examples/javascript/package-lock.json
