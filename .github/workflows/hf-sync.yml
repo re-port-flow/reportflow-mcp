@@ -1,9 +1,9 @@
-# Publish the Hugging Face organization card to the Hub.
+# Publish the Hugging Face organization card and Space app to the Hub.
 #
-# `hf/README.md` in this repository is the source of truth for
-# https://huggingface.co/spaces/reportflow/README — the Static Space whose
-# README.md renders as the card on https://huggingface.co/reportflow. This
-# workflow copies that one file into the Space and pushes it.
+# `hf/` in this repository is the source of truth for
+# https://huggingface.co/spaces/reportflow/README — the Space whose
+# README.md renders as the card on https://huggingface.co/reportflow (PRJ-3-1498).
+# This workflow copies README.md, app.py, gallery.py and requirements.txt.
 #
 # WHY A SINGLE WORKFLOW RATHER THAN `workflow_run` ON THE EXISTING CI:
 #   `workflow_run` only fires after another workflow finishes, so a manual
@@ -13,8 +13,8 @@
 #   job in this workflow gates push and manual runs identically.
 #
 # WHAT IS AND IS NOT SYNCED:
-#   Only `hf/README.md` -> the Space's `README.md`. The Space's `index.html` is
-#   left alone; it is owned by the Space, not by this repository.
+#   hf/README.md, hf/app.py, hf/gallery.py, hf/requirements.txt.
+#   Tests (hf/test_gallery.py) stay in this repository.
 #
 # ROLLBACK:
 #   The Space is a git repository. To undo a bad sync:
@@ -114,6 +114,14 @@ jobs:
             exit 1
           fi
           echo "No credential-shaped strings in hf/ ($count file(s) scanned)."
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Public gallery unit tests
+        working-directory: hf
+        run: |
+          python3 -m pip install -q 'httpx>=0.27.0,<1'
+          python3 -m unittest test_gallery.py
 
   sync:
     name: push to Hugging Face Space
@@ -144,10 +152,13 @@ jobs:
             printf '%s\n' "$front" | grep -qE "^${key}:" || missing="$missing $key"
           done
           [ -z "$missing" ] || { echo "::error::frontmatter is missing:$missing"; exit 1; }
-          printf '%s\n' "$front" | grep -qE '^sdk:[[:space:]]*static$' || {
-            echo "::error::the Space is a Static Space; frontmatter must keep 'sdk: static'."; exit 1; }
-          printf '%s\n' "$front" | grep -qE '^app_file:[[:space:]]*index\.html$' || {
-            echo "::error::frontmatter must keep 'app_file: index.html' (the Space owns index.html)."; exit 1; }
+          printf '%s\n' "$front" | grep -qE '^sdk:[[:space:]]*gradio$' || {
+            echo "::error::frontmatter must keep 'sdk: gradio' (PRJ-3-1498)."; exit 1; }
+          printf '%s\n' "$front" | grep -qE '^app_file:[[:space:]]*app\.py$' || {
+            echo "::error::frontmatter must keep 'app_file: app.py'."; exit 1; }
+          for needed in hf/app.py hf/gallery.py hf/requirements.txt; do
+            [ -f "$needed" ] || { echo "::error::$needed is missing."; exit 1; }
+          done
           echo 'Frontmatter OK.'
 
       - name: Check HF_TOKEN is configured
@@ -166,19 +177,22 @@ jobs:
       - name: Clone the Space
         run: git clone "$HF_SPACE_URL" space
 
-      - name: Stage the card
+      - name: Stage the Space files
         id: stage
         run: |
           cp hf/README.md space/README.md
-          cd space
+          cp hf/app.py space/app.py
+          cp hf/gallery.py space/gallery.py
+          cp hf/requirements.txt space/requirements.txt
+          git -C space add README.md app.py gallery.py requirements.txt
           # --porcelain rather than `git diff`, so a Space that somehow has no
           # committed README.md is seen as a change instead of as "no diff".
-          if [ -z "$(git status --porcelain -- README.md)" ]; then
+          if [ -z "$(git -C space status --porcelain -- README.md app.py gallery.py requirements.txt)" ]; then
             echo 'changed=false' >> "$GITHUB_OUTPUT"
-            echo 'Space README already matches hf/README.md — nothing to push.'
+            echo 'Space already matches hf/ — nothing to push.'
           else
             echo 'changed=true' >> "$GITHUB_OUTPUT"
-            git --no-pager diff -- README.md
+            git -C space --no-pager diff --cached
           fi
 
       - name: Push to the Hub
@@ -189,8 +203,8 @@ jobs:
         run: |
           git config user.name 'reportflow-mcp bot'
           git config user.email 'noreply@re-port-flow.com'
-          git add README.md
-          git commit -m "Sync organization card from reportflow-mcp@${GITHUB_SHA:0:7}"
+          git add README.md app.py gallery.py requirements.txt
+          git commit -m "Sync Space from reportflow-mcp@${GITHUB_SHA:0:7}"
           # The token is an Actions secret, so GitHub masks it in the log; keep
           # it off .git/config by passing the URL only to this one command.
           git push "https://user:${HF_TOKEN}@huggingface.co/spaces/reportflow/README" HEAD:main
@@ -202,5 +216,5 @@ jobs:
           elif [ '${{ inputs.dry_run }}' = 'true' ]; then
             echo 'Dry run — the diff above was **not** pushed.' >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "Pushed the organization card to ${HF_SPACE_URL}" >> "$GITHUB_STEP_SUMMARY"
+            echo "Pushed the Space files to ${HF_SPACE_URL}" >> "$GITHUB_STEP_SUMMARY"
           fi

@@ -3,15 +3,22 @@ title: Re:port Flow
 emoji: 📄
 colorFrom: blue
 colorTo: indigo
-sdk: static
-app_file: index.html
+sdk: gradio
+sdk_version: 4.44.1
+app_file: app.py
 pinned: false
 ---
 
-<!-- Source of truth: hf/README.md in re-port-flow/reportflow-mcp.
-     Edit it there — .github/workflows/hf-sync.yml overwrites this file. -->
+<!-- Source of truth: hf/ in re-port-flow/reportflow-mcp.
+     Edit it there — .github/workflows/hf-sync.yml overwrites this Space. -->
 
 # Re:port Flow
+
+This Space is the [reportflow](https://huggingface.co/reportflow) organization
+card and a **read-only** browser for public templates. It does not generate
+PDFs and stores no API keys. After you pick a template,
+[create a free account](https://re-port-flow.com/register) and connect the
+MCP server below.
 
 Business PDFs — invoices, quotations, delivery notes, statements — generated
 from reusable templates, by an AI agent, in one turn.

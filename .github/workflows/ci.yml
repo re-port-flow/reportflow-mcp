@@ -90,3 +90,18 @@ jobs:
       # 緑のまま素通りするので、参照の実在をここで見る。
       - name: Ensure package.json script references resolve
         run: node scripts/check-package-scripts.mjs
+
+  hf-gallery:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hf
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Public gallery unit tests
+        run: |
+          python3 -m pip install -q 'httpx>=0.27.0,<1'
+          python3 -m unittest test_gallery.py
