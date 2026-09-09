@@ -16,10 +16,10 @@ pinned: false
 # Re:port Flow
 
 This Space is the [reportflow](https://huggingface.co/reportflow) organization
-card and a **read-only** browser for public templates. It does not generate
-PDFs and stores no API keys. After you pick a template,
-[create a free account](https://re-port-flow.com/register) and connect the
-MCP server below.
+card and a public-template browser. Hub MCP tools stay read-only and store
+no API keys. After you sign in on the App tab, the accordion can list
+**your** designs and render a filled document. Agents should still use the
+product MCP below.
 
 Business PDFs — invoices, quotations, delivery notes, statements — generated
 from reusable templates, by an AI agent, in one turn.
