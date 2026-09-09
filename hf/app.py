@@ -42,7 +42,8 @@ def _format_results(payload: dict) -> str:
     lines.extend(
         [
             "",
-            "This Space does **not** generate PDFs. Copy a slug into Preview, then "
+            "This Space does **not** generate PDFs. The first match is previewed "
+            "below; click a thumbnail to switch. Then "
             f"[sign up free]({REGISTER_URL}) and connect "
             f"`{MCP_URL}` to render a filled document.",
         ]
@@ -64,7 +65,7 @@ def search_gallery(
     query: str,
     category: str,
     sort: str,
-) -> tuple[str, list[tuple[str, str]]]:
+) -> tuple[str, list[tuple[str, str]], str, str]:
     """Search the public template gallery (unauthenticated, read-only).
 
     Args:
@@ -73,14 +74,43 @@ def search_gallery(
         sort: Either "popular" or "newest".
 
     Returns:
-        Markdown table of matches and thumbnail pairs for the gallery widget.
+        Markdown table, thumbnails, first match slug, and that template's preview.
     """
     category_code = None if category in ("", "(any)") else category
     try:
         payload = search_templates(query=query or "", category=category_code, sort=sort)
     except GalleryError as err:
-        return str(err), []
-    return _format_results(payload), _thumbnails(payload)
+        return str(err), [], "", str(err)
+    items = payload.get("items") or []
+    first_slug = ""
+    if items and isinstance(items[0].get("slug"), str):
+        first_slug = items[0]["slug"]
+    preview = preview_template(first_slug) if first_slug else ""
+    return _format_results(payload), _thumbnails(payload), first_slug, preview
+
+
+def slug_from_gallery_select(value: object) -> str:
+    """Pull the template slug out of a Gradio Gallery select payload."""
+    if isinstance(value, str):
+        text = value.strip()
+        if text and not text.startswith("http://") and not text.startswith("https://"):
+            return text
+        return ""
+    if isinstance(value, (list, tuple)) and len(value) >= 2:
+        return slug_from_gallery_select(value[1])
+    if isinstance(value, dict):
+        for key in ("caption", "alt_text", "label"):
+            found = slug_from_gallery_select(value.get(key))
+            if found:
+                return found
+    return ""
+
+
+def preview_from_gallery(evt: gr.SelectData) -> tuple[str, str]:
+    slug = slug_from_gallery_select(evt.value)
+    if not slug:
+        return "", "Click a thumbnail to preview that template."
+    return slug, preview_template(slug)
 
 
 def preview_template(slug: str) -> str:
@@ -158,21 +188,29 @@ after you pick a template.
         )
     search_btn = gr.Button("Search gallery", variant="primary")
     results = gr.Markdown()
-    thumbs = gr.Gallery(label="Thumbnails", columns=4, height=240)
+    detail = gr.Markdown(label="Preview")
+    thumbs = gr.Gallery(
+        label="Thumbnails — click one to preview",
+        columns=4,
+        height=240,
+    )
+    slug = gr.Textbox(label="Template slug to preview")
+    preview_btn = gr.Button("Preview")
+    search_outputs = [results, thumbs, slug, detail]
     search_btn.click(
         fn=search_gallery,
         inputs=[query, category, sort],
-        outputs=[results, thumbs],
+        outputs=search_outputs,
     )
     query.submit(
         fn=search_gallery,
         inputs=[query, category, sort],
-        outputs=[results, thumbs],
+        outputs=search_outputs,
     )
-
-    slug = gr.Textbox(label="Template slug to preview")
-    preview_btn = gr.Button("Preview")
-    detail = gr.Markdown()
+    thumbs.select(
+        fn=preview_from_gallery,
+        outputs=[slug, detail],
+    )
     preview_btn.click(
         fn=preview_template,
         inputs=[slug],
