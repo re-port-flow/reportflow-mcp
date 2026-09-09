@@ -157,7 +157,9 @@ jobs:
           printf '%s\n' "$front" | grep -qE '^app_file:[[:space:]]*app\.py$' || {
             echo "::error::frontmatter must keep 'app_file: app.py'."; exit 1; }
           printf '%s\n' "$front" | grep -qE '^python_version:[[:space:]]*"3\.12"$' || {
-            echo "::error::frontmatter must keep 'python_version: \"3.12\"' (Gradio 4.44.1 / pydub need stdlib audioop; Python 3.13 removed it)."; exit 1; }
+            echo "::error::frontmatter must keep 'python_version: \"3.12\"' (HF Spaces defaulted to 3.13 and broke Gradio import)."; exit 1; }
+          printf '%s\n' "$front" | grep -qE '^sdk_version:[[:space:]]*5\.50\.0$' || {
+            echo "::error::frontmatter must keep 'sdk_version: 5.50.0' (4.44.1 dies in get_api_info on additionalProperties: bool)."; exit 1; }
           for needed in hf/app.py hf/gallery.py hf/requirements.txt; do
             [ -f "$needed" ] || { echo "::error::$needed is missing."; exit 1; }
           done
