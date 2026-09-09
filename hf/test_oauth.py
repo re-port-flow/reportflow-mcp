@@ -1,0 +1,91 @@
+"""Tests for Space-UI OAuth (not Hub MCP tools)."""
+
+from __future__ import annotations
+
+import json
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import httpx
+
+import oauth
+import workspace
+
+HF_DIR = Path(__file__).resolve().parent
+
+
+class OauthSafetyTests(unittest.TestCase):
+    def setUp(self) -> None:
+        oauth.reset_client_cache()
+
+    def test_app_keeps_pkce_off_mcp_and_hides_workspace_api(self) -> None:
+        source = (HF_DIR / "app.py").read_text(encoding="utf-8")
+        self.assertIn("show_api=False", source)
+        self.assertIn("start_sign_in", source)
+        self.assertNotIn("mcp_server", (HF_DIR / "oauth.py").read_text(encoding="utf-8"))
+
+    def test_two_sessions_do_not_share_tokens(self) -> None:
+        oauth._store_tokens(
+            "sess-a",
+            {"access_token": "aaa.bbb.ccc", "expires_in": 3600},
+        )
+        oauth._store_tokens(
+            "sess-b",
+            {"access_token": "ddd.eee.fff", "expires_in": 3600},
+        )
+        self.assertEqual(oauth.access_token_for("sess-a"), "aaa.bbb.ccc")
+        self.assertEqual(oauth.access_token_for("sess-b"), "ddd.eee.fff")
+        oauth.sign_out("sess-a")
+        with self.assertRaises(oauth.OAuthError):
+            oauth.access_token_for("sess-a")
+        self.assertEqual(oauth.access_token_for("sess-b"), "ddd.eee.fff")
+
+    def test_status_never_includes_token_fields(self) -> None:
+        oauth._store_tokens(
+            "sess",
+            {"access_token": "secret-token-value", "expires_in": 3600},
+        )
+        dumped = json.dumps(oauth.session_status("sess"))
+        self.assertNotIn("secret-token-value", dumped)
+        self.assertNotIn("access_token", dumped)
+
+    def test_register_sends_explicit_scopes_and_space_redirect(self) -> None:
+        mock = MagicMock(spec=httpx.Client)
+        response = MagicMock()
+        response.status_code = 201
+        response.json.return_value = {"client_id": "dcr-test"}
+        response.raise_for_status.return_value = None
+        mock.post.return_value = response
+        cid = oauth.register_public_client(client=mock)
+        self.assertEqual(cid, "dcr-test")
+        body = mock.post.call_args.kwargs["json"]
+        self.assertIn("pdf:generate", body["scope"])
+        self.assertEqual(body["token_endpoint_auth_method"], "none")
+        self.assertTrue(body["redirect_uris"][0].endswith("/"))
+
+    def test_finish_rejects_unknown_state(self) -> None:
+        with self.assertRaises(oauth.OAuthError):
+            oauth.finish_authorization("sess", code="abc", state="nope")
+
+
+class WorkspaceCallTests(unittest.TestCase):
+    def test_list_401_becomes_oauth_error(self) -> None:
+        mock = MagicMock(spec=httpx.Client)
+        request = httpx.Request("GET", f"{workspace.API_BASE}/v1/file/designs")
+        response = httpx.Response(401, request=request)
+        mock.get.side_effect = httpx.HTTPStatusError(
+            "nope", request=request, response=response
+        )
+        with self.assertRaises(oauth.OAuthError):
+            workspace.list_designs("tok", client=mock)
+
+    def test_copy_rejects_path_injection(self) -> None:
+        mock = MagicMock(spec=httpx.Client)
+        with self.assertRaises(oauth.OAuthError):
+            workspace.copy_public_template("tok", "ws", "../x", client=mock)
+        mock.post.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -14,7 +14,7 @@
 #
 # WHAT IS AND IS NOT SYNCED:
 #   hf/README.md, hf/app.py, hf/gallery.py, hf/requirements.txt.
-#   Tests (hf/test_gallery.py) stay in this repository.
+#   Tests (hf/test_gallery.py, hf/test_oauth.py) stay in this repository.
 #
 # ROLLBACK:
 #   The Space is a git repository. To undo a bad sync:
@@ -121,7 +121,7 @@ jobs:
         working-directory: hf
         run: |
           python3 -m pip install -q 'httpx>=0.27.0,<1' 'pypdfium2>=4.30.0,<5' 'pillow>=10.0.0,<12'
-          python3 -m unittest test_gallery.py
+          python3 -m unittest test_gallery.py test_oauth.py
 
   sync:
     name: push to Hugging Face Space
@@ -160,7 +160,7 @@ jobs:
             echo "::error::frontmatter must keep 'python_version: \"3.12\"' (HF Spaces defaulted to 3.13 and broke Gradio import)."; exit 1; }
           printf '%s\n' "$front" | grep -qE '^sdk_version:[[:space:]]*5\.50\.0$' || {
             echo "::error::frontmatter must keep 'sdk_version: 5.50.0' (4.44.1 dies in get_api_info on additionalProperties: bool)."; exit 1; }
-          for needed in hf/app.py hf/gallery.py hf/requirements.txt; do
+          for needed in hf/app.py hf/gallery.py hf/oauth.py hf/workspace.py hf/requirements.txt; do
             [ -f "$needed" ] || { echo "::error::$needed is missing."; exit 1; }
           done
           echo 'Frontmatter OK.'
@@ -187,11 +187,13 @@ jobs:
           cp hf/README.md space/README.md
           cp hf/app.py space/app.py
           cp hf/gallery.py space/gallery.py
+          cp hf/oauth.py space/oauth.py
+          cp hf/workspace.py space/workspace.py
           cp hf/requirements.txt space/requirements.txt
-          git -C space add README.md app.py gallery.py requirements.txt
+          git -C space add README.md app.py gallery.py oauth.py workspace.py requirements.txt
           # --porcelain rather than `git diff`, so a Space that somehow has no
           # committed README.md is seen as a change instead of as "no diff".
-          if [ -z "$(git -C space status --porcelain -- README.md app.py gallery.py requirements.txt)" ]; then
+          if [ -z "$(git -C space status --porcelain -- README.md app.py gallery.py oauth.py workspace.py requirements.txt)" ]; then
             echo 'changed=false' >> "$GITHUB_OUTPUT"
             echo 'Space already matches hf/ — nothing to push.'
           else
@@ -207,7 +209,7 @@ jobs:
         run: |
           git config user.name 'reportflow-mcp bot'
           git config user.email 'noreply@re-port-flow.com'
-          git add README.md app.py gallery.py requirements.txt
+          git add README.md app.py gallery.py oauth.py workspace.py requirements.txt
           git commit -m "Sync Space from reportflow-mcp@${GITHUB_SHA:0:7}"
           # The token is an Actions secret, so GitHub masks it in the log; keep
           # it off .git/config by passing the URL only to this one command.

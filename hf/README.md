@@ -77,6 +77,10 @@ Tools exposed here are **read-only public gallery** only:
 They do not copy a template into a workspace and they do not render a
 document. UI preview (PNG) is not an MCP tool.
 
+The App accordion **Sign in to your workspace** is a separate, browser-only
+Authorization Code + PKCE flow. Hub MCP tools never start that flow. Tokens
+are not written into tool results or Space Secrets.
+
 ## The shortest path to a PDF
 
 Use the **product** MCP, not this Space:
