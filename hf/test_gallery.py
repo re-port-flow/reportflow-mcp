@@ -24,6 +24,7 @@ class GalleryUrlSafetyTests(unittest.TestCase):
         source = (HF_DIR / "app.py").read_text(encoding="utf-8")
         self.assertNotIn("generate_pdf", source)
         self.assertNotIn("/duplicate", source)
+        self.assertNotIn("<iframe", source)
         self.assertIn("REGISTER_URL", source)
         self.assertIn("MCP_URL", source)
 
@@ -102,6 +103,43 @@ class GetTemplateTests(unittest.TestCase):
         url = mock.get.call_args.args[0]
         self.assertEqual(
             url, f"{gallery.GALLERY_API_BASE}/0eUPGyiGX8uzwE8L"
+        )
+
+
+class PublicThumbnailTests(unittest.TestCase):
+    def test_builds_public_asset_url_and_rejects_path_injection(self) -> None:
+        self.assertEqual(
+            gallery.public_thumbnail_url("0eUPGyiGX8uzwE8L"),
+            f"{gallery.PUBLIC_THUMB_BASE}/0eUPGyiGX8uzwE8L/thumbnail",
+        )
+        with self.assertRaises(gallery.GalleryError):
+            gallery.public_thumbnail_url("../secret")
+
+    def test_rasterizes_pdf_bytes_to_png(self) -> None:
+        png = gallery._pdf_first_page_png(
+            b"%PDF-1.1\n"
+            b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+            b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+            b"3 0 obj<</Type/Page/MediaBox[0 0 20 20]/Parent 2 0 R>>endobj\n"
+            b"xref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n"
+            b"0000000052 00000 n \n0000000101 00000 n \n"
+            b"trailer<</Size 4/Root 1 0 R>>\nstartxref\n178\n%%EOF\n"
+        )
+        self.assertTrue(png.startswith(b"\x89PNG"))
+
+    def test_fetch_uses_public_thumbnail_url(self) -> None:
+        mock = MagicMock(spec=httpx.Client)
+        response = MagicMock()
+        response.status_code = 200
+        response.headers = {"content-type": "image/png"}
+        response.content = b"\x89PNG\r\n\x1a\n"
+        response.raise_for_status.return_value = None
+        mock.get.return_value = response
+        data = gallery.fetch_thumbnail_png("abc", client=mock)
+        self.assertEqual(data[:4], b"\x89PNG")
+        self.assertEqual(
+            mock.get.call_args.args[0],
+            f"{gallery.PUBLIC_THUMB_BASE}/abc/thumbnail",
         )
 
 

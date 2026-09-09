@@ -103,5 +103,5 @@ jobs:
           python-version: '3.12'
       - name: Public gallery unit tests
         run: |
-          python3 -m pip install -q 'httpx>=0.27.0,<1'
+          python3 -m pip install -q 'httpx>=0.27.0,<1' 'pypdfium2>=4.30.0,<5' 'pillow>=10.0.0,<12'
           python3 -m unittest test_gallery.py

@@ -5,14 +5,16 @@ Does not generate PDFs. Sign-up and the hosted MCP server do that.
 
 from __future__ import annotations
 
-import html
+import io
 
 import gradio as gr
+from PIL import Image
 
 from gallery import (
     MCP_URL,
     REGISTER_URL,
     GalleryError,
+    fetch_thumbnail_png,
     get_template,
     list_categories,
     search_templates,
@@ -45,7 +47,7 @@ def _format_results(payload: dict) -> str:
         [
             "",
             "This Space does **not** generate PDFs. The first match is previewed "
-            "below (the public thumbnail is a PDF page, not a PNG). Then "
+            "below. Then "
             f"[sign up free]({REGISTER_URL}) and connect "
             f"`{MCP_URL}` to render a filled document.",
         ]
@@ -53,24 +55,11 @@ def _format_results(payload: dict) -> str:
     return "\n".join(lines)
 
 
-def _preview_frame(thumb_url: str | None) -> str:
-    """Embed the public thumbnail. The API serves a PDF, not a raster image."""
-    if not thumb_url or not thumb_url.startswith("https://"):
-        return "<p>No public preview file for this template.</p>"
-    safe = html.escape(thumb_url, quote=True)
-    return (
-        f'<p><a href="{safe}" target="_blank" rel="noopener">Open preview PDF</a></p>'
-        f'<iframe src="{safe}" title="Template preview" '
-        'style="width:100%;min-height:640px;border:1px solid #444;background:#fff">'
-        "</iframe>"
-    )
-
-
 def search_gallery(
     query: str,
     category: str,
     sort: str,
-) -> tuple[str, str, str, str]:
+) -> tuple[str, str, str, Image.Image | None]:
     """Search the public template gallery (unauthenticated, read-only).
 
     Args:
@@ -79,24 +68,24 @@ def search_gallery(
         sort: Either "popular" or "newest".
 
     Returns:
-        Markdown table, preview iframe, first match slug, and detail markdown.
+        Markdown table, first match slug, detail markdown, and a PNG preview.
     """
     category_code = None if category in ("", "(any)") else category
     try:
         payload = search_templates(query=query or "", category=category_code, sort=sort)
     except GalleryError as err:
-        return str(err), f"<p>{html.escape(str(err))}</p>", "", str(err)
+        return str(err), "", str(err), None
     items = payload.get("items") or []
     first_slug = ""
     if items and isinstance(items[0].get("slug"), str):
         first_slug = items[0]["slug"]
     if first_slug:
-        detail, frame = preview_template(first_slug)
-        return _format_results(payload), frame, first_slug, detail
-    return _format_results(payload), "", "", ""
+        detail, image = preview_template(first_slug)
+        return _format_results(payload), first_slug, detail, image
+    return _format_results(payload), "", "", None
 
 
-def preview_template(slug: str) -> tuple[str, str]:
+def preview_template(slug: str) -> tuple[str, Image.Image | None]:
     """Load one public template's details by slug (unauthenticated, read-only).
 
     Args:
@@ -104,16 +93,20 @@ def preview_template(slug: str) -> tuple[str, str]:
             until the user signs up and copies the template into their workspace.
 
     Returns:
-        Markdown description and an HTML iframe of the public thumbnail PDF.
+        Markdown description and a PNG of the public thumbnail (rasterized PDF).
     """
     try:
         item = get_template(slug)
     except GalleryError as err:
-        return str(err), f"<p>{html.escape(str(err))}</p>"
+        return str(err), None
     title = item.get("title") or slug
     description = item.get("description") or ""
-    thumbnail = item.get("thumbnailUrl")
-    thumb_url = thumbnail if isinstance(thumbnail, str) and thumbnail.startswith("https://") else None
+    image: Image.Image | None
+    try:
+        png = fetch_thumbnail_png(str(item.get("slug") or slug))
+        image = Image.open(io.BytesIO(png)).convert("RGB")
+    except GalleryError:
+        image = None
     body = "\n".join(
         [
             f"### {title}",
@@ -128,7 +121,7 @@ def preview_template(slug: str) -> tuple[str, str]:
             "This Space never calls generate or duplicate APIs.",
         ]
     )
-    return body, _preview_frame(thumb_url)
+    return body, image
 
 
 def signup_cta() -> str:
@@ -170,10 +163,10 @@ after you pick a template.
     search_btn = gr.Button("Search gallery", variant="primary")
     results = gr.Markdown()
     detail = gr.Markdown(label="Details")
-    preview_frame = gr.HTML(label="Template preview (PDF)")
+    preview_image = gr.Image(label="Template preview", type="pil")
     slug = gr.Textbox(label="Template slug to preview")
     preview_btn = gr.Button("Preview")
-    search_outputs = [results, preview_frame, slug, detail]
+    search_outputs = [results, slug, detail, preview_image]
     search_btn.click(
         fn=search_gallery,
         inputs=[query, category, sort],
@@ -187,7 +180,7 @@ after you pick a template.
     preview_btn.click(
         fn=preview_template,
         inputs=[slug],
-        outputs=[detail, preview_frame],
+        outputs=[detail, preview_image],
     )
 
     gr.Markdown(
