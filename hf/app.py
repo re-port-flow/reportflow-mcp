@@ -6,6 +6,7 @@ Does not generate PDFs. Sign-up and the hosted MCP server do that.
 from __future__ import annotations
 
 import io
+import json
 
 import gradio as gr
 from PIL import Image
@@ -17,6 +18,9 @@ from gallery import (
     fetch_thumbnail_png,
     get_template,
     list_categories,
+    mcp_register,
+    mcp_search,
+    mcp_template,
     search_templates,
 )
 
@@ -124,9 +128,59 @@ def preview_template(slug: str) -> tuple[str, Image.Image | None]:
     return body, image
 
 
-def signup_cta() -> str:
-    """Return the free-registration URL for generating PDFs after signup."""
-    return REGISTER_URL
+def search_gallery_templates(
+    query: str = "",
+    category: str = "",
+    sort: str = "popular",
+) -> str:
+    """Search the public Re:port Flow template gallery (read-only, no login).
+
+    Does not copy a template or render a filled document. For those, the caller
+    must sign up and use the product MCP server in the returned mcpUrl.
+
+    Args:
+        query: Keyword matched against title, description, tags, category, slug.
+        category: Public category code, or empty / "(any)" for all categories.
+        sort: Either "popular" or "newest".
+
+    Returns:
+        JSON with items (slug, title, category, description), match counts,
+        registerUrl, and mcpUrl.
+    """
+    category_code = None if category in ("", "(any)") else category
+    try:
+        payload = mcp_search(query=query or "", category=category_code, sort=sort)
+    except GalleryError as err:
+        return json.dumps({"error": str(err)}, ensure_ascii=False)
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def get_gallery_template(slug: str) -> str:
+    """Get one public template by slug (read-only, no login).
+
+    The slug is not a workspace designId. This Space never copies a template
+    or renders a filled document.
+
+    Args:
+        slug: Template slug from search_gallery_templates.
+
+    Returns:
+        JSON with title, slug, category, version, description, registerUrl, mcpUrl.
+    """
+    try:
+        item = mcp_template(slug)
+    except GalleryError as err:
+        return json.dumps({"error": str(err)}, ensure_ascii=False)
+    return json.dumps(item, ensure_ascii=False)
+
+
+def get_register_url() -> str:
+    """Return the free-registration URL and the product MCP endpoint.
+
+    Use this when the user wants to create a filled document. This Space
+    cannot do that.
+    """
+    return json.dumps(mcp_register(), ensure_ascii=False)
 
 
 def _category_choices() -> list[str]:
@@ -171,17 +225,23 @@ after you pick a template.
         fn=search_gallery,
         inputs=[query, category, sort],
         outputs=search_outputs,
+        show_api=False,
     )
     query.submit(
         fn=search_gallery,
         inputs=[query, category, sort],
         outputs=search_outputs,
+        show_api=False,
     )
     preview_btn.click(
         fn=preview_template,
         inputs=[slug],
         outputs=[detail, preview_image],
+        show_api=False,
     )
+    gr.api(search_gallery_templates, api_name="search_gallery_templates")
+    gr.api(get_gallery_template, api_name="get_gallery_template")
+    gr.api(get_register_url, api_name="get_register_url")
 
     gr.Markdown(
         f"[Create a free account to generate PDFs]({REGISTER_URL}) · "
@@ -190,4 +250,4 @@ after you pick a template.
 
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(mcp_server=True)
