@@ -23,6 +23,16 @@ from gallery import (
     mcp_template,
     search_templates,
 )
+from oauth import (
+    OAuthError,
+    access_token_for,
+    finish_authorization,
+    session_status,
+    sign_out,
+    start_authorization,
+    workspace_id_for,
+)
+from workspace import copy_public_template, design_parameters, list_designs, render_document
 
 
 def _format_results(payload: dict) -> str:
@@ -183,6 +193,115 @@ def get_register_url() -> str:
     return json.dumps(mcp_register(), ensure_ascii=False)
 
 
+def _session_id(request: gr.Request) -> str:
+    sid = getattr(request, "session_hash", None)
+    if not isinstance(sid, str) or not sid:
+        raise OAuthError("No browser session. Reload the App tab and try again.")
+    return sid
+
+
+def consume_oauth_redirect(request: gr.Request) -> str:
+    """Complete PKCE if the App was opened with ?code=&state=."""
+    params = getattr(request, "query_params", None) or {}
+    code = params.get("code") if hasattr(params, "get") else None
+    state = params.get("state") if hasattr(params, "get") else None
+    if not code or not state:
+        try:
+            return _status_markdown(_session_id(request))
+        except OAuthError:
+            return "Not signed in. Public gallery above does not need an account."
+    try:
+        finish_authorization(_session_id(request), str(code), str(state))
+    except OAuthError as err:
+        return str(err)
+    return _status_markdown(_session_id(request))
+
+
+def _status_markdown(session_id: str) -> str:
+    status = session_status(session_id)
+    if not status.get("signedIn"):
+        return "Not signed in."
+    ws = status.get("workspaceId") or "(workspace chosen on the consent screen)"
+    return (
+        f"Signed in. Workspace is fixed server-side: `{ws}`.\n\n"
+        "Tokens stay on the server for this browser session. "
+        "They are not Hub MCP tools."
+    )
+
+
+def start_sign_in() -> str:
+    """Open Re:port Flow login + workspace consent (Authorization Code + PKCE)."""
+    try:
+        url = start_authorization()
+    except OAuthError as err:
+        return str(err)
+    return (
+        f"Open this link, sign in, pick **your** workspace, then you return here:\n\n"
+        f"{url}"
+    )
+
+
+def do_sign_out(request: gr.Request) -> str:
+    try:
+        sign_out(_session_id(request))
+    except OAuthError:
+        pass
+    return "Signed out."
+
+
+def list_my_designs(request: gr.Request) -> str:
+    try:
+        payload = list_designs(access_token_for(_session_id(request)))
+    except OAuthError as err:
+        return str(err)
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def load_param_schema(design_id: str, version: str, request: gr.Request) -> str:
+    try:
+        ver = int(version) if str(version).strip() else None
+        payload = design_parameters(
+            access_token_for(_session_id(request)), design_id, ver
+        )
+    except (OAuthError, ValueError) as err:
+        return str(err)
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def copy_slug_into_workspace(slug: str, request: gr.Request) -> str:
+    try:
+        sid = _session_id(request)
+        payload = copy_public_template(
+            access_token_for(sid), workspace_id_for(sid), slug
+        )
+    except OAuthError as err:
+        return str(err)
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def render_my_document(
+    design_id: str,
+    version: str,
+    params_json: str,
+    file_name: str,
+    request: gr.Request,
+) -> str:
+    try:
+        params = json.loads(params_json or "{}")
+        if not isinstance(params, dict):
+            raise OAuthError("params must be a JSON object of values you supplied.")
+        result = render_document(
+            access_token_for(_session_id(request)),
+            design_id,
+            int(version),
+            params,
+            file_name or "document.pdf",
+        )
+    except (OAuthError, ValueError, json.JSONDecodeError) as err:
+        return str(err)
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
 def _category_choices() -> list[str]:
     try:
         categories = list_categories()
@@ -197,9 +316,8 @@ with gr.Blocks(title="Re:port Flow") as demo:
         """
 # Re:port Flow — public templates
 
-Browse invoice, quotation, and other document templates. **No login.**
-PDF generation is not available here; use a free account and the MCP server
-after you pick a template.
+Browse public templates with **no login**. To fill a document from **your**
+workspace, sign in below. The Hub MCP tools on this Space stay read-only.
         """
     )
     with gr.Row():
@@ -243,9 +361,60 @@ after you pick a template.
     gr.api(get_gallery_template, api_name="get_gallery_template")
     gr.api(get_register_url, api_name="get_register_url")
 
+    with gr.Accordion("Sign in to your workspace", open=False):
+        auth_status = gr.Markdown()
+        sign_in_md = gr.Markdown()
+        with gr.Row():
+            sign_in_btn = gr.Button("Sign in with Re:port Flow")
+            sign_out_btn = gr.Button("Sign out")
+        demo.load(
+            fn=consume_oauth_redirect,
+            inputs=None,
+            outputs=[auth_status],
+            show_api=False,
+        )
+        sign_in_btn.click(fn=start_sign_in, outputs=[sign_in_md], show_api=False)
+        sign_out_btn.click(fn=do_sign_out, outputs=[auth_status], show_api=False)
+        ws_designs = gr.Textbox(label="Workspace designs (JSON)", lines=8)
+        list_btn = gr.Button("List my designs")
+        list_btn.click(fn=list_my_designs, outputs=[ws_designs], show_api=False)
+        copy_slug = gr.Textbox(label="Public slug to copy once into this workspace")
+        copy_btn = gr.Button("Copy slug into my workspace")
+        copy_out = gr.Textbox(label="Copy result")
+        copy_btn.click(
+            fn=copy_slug_into_workspace,
+            inputs=[copy_slug],
+            outputs=[copy_out],
+            show_api=False,
+        )
+        design_id = gr.Textbox(label="designId")
+        design_ver = gr.Textbox(label="version", value="1")
+        schema_btn = gr.Button("Load parameter schema")
+        schema_out = gr.Textbox(label="Parameter schema", lines=8)
+        schema_btn.click(
+            fn=load_param_schema,
+            inputs=[design_id, design_ver],
+            outputs=[schema_out],
+            show_api=False,
+        )
+        params_box = gr.Textbox(
+            label="params JSON (your values only — do not invent amounts or names)",
+            lines=8,
+            value="{}",
+        )
+        file_name = gr.Textbox(label="file name", value="document.pdf")
+        render_btn = gr.Button("Render from this workspace")
+        render_out = gr.Textbox(label="Render result")
+        render_btn.click(
+            fn=render_my_document,
+            inputs=[design_id, design_ver, params_box, file_name],
+            outputs=[render_out],
+            show_api=False,
+        )
+
     gr.Markdown(
-        f"[Create a free account to generate PDFs]({REGISTER_URL}) · "
-        f"MCP: `{MCP_URL}`"
+        f"[Create a free account]({REGISTER_URL}) · "
+        f"product MCP: `{MCP_URL}`"
     )
 
 
