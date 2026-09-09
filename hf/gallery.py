@@ -6,6 +6,7 @@ OAuth). The Hugging Face Space is an anonymous showcase.
 
 from __future__ import annotations
 
+import io
 import json
 from typing import Any
 from urllib.parse import urljoin
@@ -13,11 +14,13 @@ from urllib.parse import urljoin
 import httpx
 
 GALLERY_API_BASE = "https://re-port-flow.com/api/v1/public/templates"
+PUBLIC_THUMB_BASE = "https://re-port-flow.com/api/v1/public/assets/templates"
 REGISTER_URL = "https://re-port-flow.com/register"
 MCP_URL = "https://mcp.re-port-flow.com/mcp"
 PAGE_LIMIT = 100
 MAX_SCAN = 300
 REQUEST_TIMEOUT_S = 15.0
+MAX_THUMB_BYTES = 8_000_000
 
 # Paths that would write to a workspace or mint credentials. A test asserts
 # none of these strings appear as request URLs in this module.
@@ -174,3 +177,71 @@ def get_template(slug: str, client: httpx.Client | None = None) -> dict[str, Any
     payload["registerUrl"] = REGISTER_URL
     payload["mcpUrl"] = MCP_URL
     return payload
+
+
+def public_thumbnail_url(slug: str) -> str:
+    cleaned = slug.strip()
+    if not cleaned or "/" in cleaned or ".." in cleaned:
+        raise GalleryError("That slug is not valid.")
+    url = f"{PUBLIC_THUMB_BASE}/{cleaned}/thumbnail"
+    if not url.startswith(f"{PUBLIC_THUMB_BASE}/"):
+        raise GalleryError("That slug is not valid.")
+    return url
+
+
+def _pdf_first_page_png(data: bytes) -> bytes:
+    import pypdfium2 as pdfium
+    from PIL import Image  # pypdfium2.to_pil requires Pillow to be importable
+
+    document = pdfium.PdfDocument(data)
+    try:
+        page = document[0]
+        bitmap = page.render(scale=1.6)
+        image = bitmap.to_pil()
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+    finally:
+        document.close()
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def fetch_thumbnail_png(slug: str, client: httpx.Client | None = None) -> bytes:
+    """GET the public thumbnail and return a PNG.
+
+    The official URL is a PDF (thumbnail.pdf). Chrome blocks that PDF when
+    iframed from a Hugging Face Space, so this Space rasterizes page 1.
+    """
+    url = public_thumbnail_url(slug)
+    if any(fragment in url for fragment in FORBIDDEN_URL_FRAGMENTS):
+        raise GalleryError("Refusing to call a non-public gallery URL.")
+    own = client is None
+    http = client or _client()
+    try:
+        try:
+            response = http.get(url, headers={"Accept": "application/pdf,image/*,*/*"})
+            response.raise_for_status()
+        except httpx.TimeoutException as err:
+            raise GalleryError("The public thumbnail timed out.") from err
+        except httpx.HTTPStatusError as err:
+            raise GalleryError(
+                f"Public thumbnail returned HTTP {err.response.status_code}."
+            ) from err
+        except httpx.RequestError as err:
+            raise GalleryError("Could not reach the public thumbnail.") from err
+        if len(response.content) > MAX_THUMB_BYTES:
+            raise GalleryError("Public thumbnail was too large.")
+        content_type = (response.headers.get("content-type") or "").lower()
+        body = response.content
+    finally:
+        if own:
+            http.close()
+    if content_type.startswith("image/"):
+        return body
+    if "pdf" in content_type or body.startswith(b"%PDF"):
+        try:
+            return _pdf_first_page_png(body)
+        except Exception as err:
+            raise GalleryError("Could not render the public thumbnail PDF.") from err
+    raise GalleryError("Public thumbnail was not an image or PDF.")
