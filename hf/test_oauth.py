@@ -23,6 +23,9 @@ class OauthSafetyTests(unittest.TestCase):
         source = (HF_DIR / "app.py").read_text(encoding="utf-8")
         self.assertIn("show_api=False", source)
         self.assertIn("start_sign_in", source)
+        self.assertIn("reload_my_designs", source)
+        self.assertIn("load_selected_design", source)
+        self.assertNotIn("Workspace designs (JSON)", source)
         self.assertNotIn("mcp_server", (HF_DIR / "oauth.py").read_text(encoding="utf-8"))
 
     def test_two_sessions_do_not_share_tokens(self) -> None:
@@ -85,6 +88,44 @@ class WorkspaceCallTests(unittest.TestCase):
         with self.assertRaises(oauth.OAuthError):
             workspace.copy_public_template("tok", "ws", "../x", client=mock)
         mock.post.assert_not_called()
+
+    def test_design_choices_and_schema_template_are_empty_not_sample_data(self) -> None:
+        choices = workspace.design_choices(
+            {
+                "designs": [
+                    {
+                        "id": "d1",
+                        "label": "Invoice",
+                        "latestVersion": 2,
+                    }
+                ]
+            }
+        )
+        self.assertEqual(choices, [("Invoice  (v2)", "d1@2")])
+        self.assertEqual(workspace.parse_design_choice("d1@2"), ("d1", 2))
+        schema = {
+            "title": "string",
+            "amount": "number",
+            "items": [{"name": "string", "price": "number"}],
+        }
+        template = workspace.empty_params_template(schema)
+        self.assertEqual(template["title"], "")
+        self.assertIsNone(template["amount"])
+        self.assertEqual(template["items"], [])
+        dumped = json.dumps(template)
+        self.assertNotIn("Acme", dumped)
+        self.assertNotIn("example.com", dumped)
+        guide = workspace.schema_guide(schema)
+        self.assertIn("`title`", guide)
+        self.assertIn("do not invent", guide.lower())
+
+    def test_safe_https_url_rejects_junk(self) -> None:
+        self.assertEqual(
+            workspace.safe_https_url("https://api.re-port-flow.com/file/x"),
+            "https://api.re-port-flow.com/file/x",
+        )
+        self.assertIsNone(workspace.safe_https_url("javascript:alert(1)"))
+        self.assertIsNone(workspace.safe_https_url("https://x.example/<script>"))
 
 
 if __name__ == "__main__":

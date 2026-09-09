@@ -168,3 +168,95 @@ def render_document(
         except json.JSONDecodeError:
             file_id = None
     return {"fileUrl": file_url, "requestId": request_id, "fileId": file_id}
+
+
+_LEAF_META_KEYS = frozenset({"name", "type", "label", "description"})
+
+
+def parse_design_choice(choice: str) -> tuple[str, int]:
+    """Parse a dropdown value `designId@version`."""
+    raw = (choice or "").strip()
+    if not raw or "/" in raw or ".." in raw:
+        raise OAuthError("Pick a design from the list.")
+    design_id, sep, version = raw.partition("@")
+    if not sep or not design_id or not version.isdigit():
+        raise OAuthError("Pick a design from the list.")
+    return design_id, int(version)
+
+
+def design_choices(payload: dict[str, Any]) -> list[tuple[str, str]]:
+    items = payload.get("designs")
+    if not isinstance(items, list):
+        return []
+    choices: list[tuple[str, str]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        design_id = item.get("id")
+        version = item.get("latestVersion")
+        if not isinstance(design_id, str) or not design_id:
+            continue
+        if not isinstance(version, int) or version < 1:
+            continue
+        label = item.get("label") if isinstance(item.get("label"), str) else design_id
+        choices.append((f"{label}  (v{version})", f"{design_id}@{version}"))
+    return choices
+
+
+def _is_leaf_descriptor(spec: Any) -> bool:
+    return isinstance(spec, dict) and "type" in spec and set(spec).issubset(_LEAF_META_KEYS)
+
+
+def schema_guide(schema: dict[str, Any]) -> str:
+    if not schema:
+        return "This design published no parameters. You can render with `{}`."
+    lines = [
+        "Fill **your** values only. Do not invent names, amounts, tax IDs, or dates.",
+        "",
+    ]
+    for key, spec in schema.items():
+        lines.append(f"- `{key}`: {_describe_spec(spec)}")
+    return "\n".join(lines)
+
+
+def _describe_spec(spec: Any) -> str:
+    if isinstance(spec, str):
+        return spec
+    if isinstance(spec, list):
+        inner = spec[0] if spec else {}
+        return f"JSON array. Example shape: `{json.dumps(_empty_value(inner), ensure_ascii=False)}`"
+    if _is_leaf_descriptor(spec):
+        parts = [str(spec.get("type") or "")]
+        if spec.get("label"):
+            parts.append(str(spec["label"]))
+        if spec.get("description"):
+            parts.append(str(spec["description"]))
+        return " — ".join(p for p in parts if p)
+    if isinstance(spec, dict):
+        return "JSON object: " + ", ".join(f"`{k}`" for k in spec)
+    return "value"
+
+
+def empty_params_template(schema: dict[str, Any]) -> dict[str, Any]:
+    """Empty structure only. Never fills sample business data."""
+    return {key: _empty_value(spec) for key, spec in schema.items()}
+
+
+def _empty_value(spec: Any) -> Any:
+    if spec == "number" or (
+        _is_leaf_descriptor(spec) and spec.get("type") == "number"
+    ):
+        return None
+    if isinstance(spec, list):
+        return []
+    if isinstance(spec, dict) and not _is_leaf_descriptor(spec):
+        return {key: _empty_value(value) for key, value in spec.items()}
+    return ""
+
+
+def safe_https_url(url: str | None) -> str | None:
+    if not url or not url.startswith("https://"):
+        return None
+    if any(ch in url for ch in (' ', "<", ">", '"', "'")):
+        return None
+    return url
