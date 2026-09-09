@@ -27,6 +27,10 @@ class GalleryUrlSafetyTests(unittest.TestCase):
         self.assertNotIn("<iframe", source)
         self.assertIn("REGISTER_URL", source)
         self.assertIn("MCP_URL", source)
+        self.assertIn("mcp_server=True", source)
+        self.assertIn("search_gallery_templates", source)
+        self.assertIn("get_gallery_template", source)
+        self.assertIn("get_register_url", source)
 
 
 class SearchTemplatesTests(unittest.TestCase):
@@ -141,6 +145,42 @@ class PublicThumbnailTests(unittest.TestCase):
             mock.get.call_args.args[0],
             f"{gallery.PUBLIC_THUMB_BASE}/abc/thumbnail",
         )
+
+
+class McpToolPayloadTests(unittest.TestCase):
+    def test_search_payload_is_read_only_public_fields(self) -> None:
+        page = {
+            "items": [
+                {
+                    "slug": "aaa",
+                    "title": "Invoice",
+                    "description": "EN",
+                    "category": "sales_transactions",
+                    "tags": ["bill"],
+                }
+            ],
+            "nextCursor": None,
+        }
+        mock = MagicMock(spec=httpx.Client)
+        response = MagicMock()
+        response.status_code = 200
+        response.headers = {"content-type": "application/json"}
+        response.json.return_value = page
+        response.raise_for_status.return_value = None
+        mock.get.return_value = response
+        payload = gallery.mcp_search(query="invoice", client=mock)
+        self.assertEqual(payload["items"][0]["slug"], "aaa")
+        self.assertEqual(payload["registerUrl"], gallery.REGISTER_URL)
+        self.assertEqual(payload["mcpUrl"], gallery.MCP_URL)
+        self.assertNotIn("generate", payload["note"].lower())
+        called = mock.get.call_args.args[0]
+        self.assertEqual(called, gallery.GALLERY_API_BASE)
+        self.assertNotIn("duplicate", called)
+
+    def test_register_payload_has_no_secrets(self) -> None:
+        payload = gallery.mcp_register()
+        self.assertEqual(payload["registerUrl"], "https://re-port-flow.com/register")
+        self.assertEqual(payload["mcpUrl"], gallery.MCP_URL)
 
 
 if __name__ == "__main__":

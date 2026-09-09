@@ -245,3 +245,66 @@ def fetch_thumbnail_png(slug: str, client: httpx.Client | None = None) -> bytes:
         except Exception as err:
             raise GalleryError("Could not render the public thumbnail PDF.") from err
     raise GalleryError("Public thumbnail was not an image or PDF.")
+
+
+def mcp_search(
+    query: str = "",
+    category: str | None = None,
+    sort: str = "popular",
+    client: httpx.Client | None = None,
+) -> dict[str, Any]:
+    """JSON body for the Hub MCP search tool. Read-only public list."""
+    payload = search_templates(query=query, category=category, sort=sort, client=client)
+    items = []
+    for item in payload.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        items.append(
+            {
+                "slug": item.get("slug"),
+                "title": item.get("title"),
+                "category": item.get("category"),
+                "description": item.get("description"),
+            }
+        )
+    return {
+        "items": items,
+        "matched": payload.get("matched", len(items)),
+        "scanned": payload.get("scanned", 0),
+        "truncated": bool(payload.get("truncated")),
+        "registerUrl": REGISTER_URL,
+        "mcpUrl": MCP_URL,
+        "note": (
+            "These slugs cannot render a document from this Space. "
+            f"Sign up at {REGISTER_URL} and connect {MCP_URL}."
+        ),
+    }
+
+
+def mcp_template(slug: str, client: httpx.Client | None = None) -> dict[str, Any]:
+    """JSON body for the Hub MCP detail tool. Read-only public detail."""
+    item = get_template(slug, client=client)
+    return {
+        "slug": item.get("slug"),
+        "title": item.get("title"),
+        "category": item.get("category"),
+        "version": item.get("version"),
+        "description": item.get("description"),
+        "registerUrl": REGISTER_URL,
+        "mcpUrl": MCP_URL,
+        "note": (
+            "To fill and render this template, sign up at "
+            f"{REGISTER_URL} then use {MCP_URL}."
+        ),
+    }
+
+
+def mcp_register() -> dict[str, str]:
+    return {
+        "registerUrl": REGISTER_URL,
+        "mcpUrl": MCP_URL,
+        "note": (
+            "Create a free account, then connect the product MCP. "
+            "Do not send workspace credentials to this Space."
+        ),
+    }

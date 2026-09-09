@@ -59,16 +59,35 @@ with the helper script in the repository and inject it as a header. The
 JavaScript client (`@huggingface/mcp-client`) works the same way — its server
 config nests under a `config` key rather than taking flat arguments.
 
+## This Space as a Hub MCP server
+
+Gradio is launched with `mcp_server=True`. Hub clients can add the Space via
+the MCP badge, or:
+
+`https://reportflow-readme.hf.space/gradio_api/mcp/`
+
+Tools exposed here are **read-only public gallery** only:
+
+| Tool | Purpose |
+|---|---|
+| `search_gallery_templates` | Keyword search over public templates |
+| `get_gallery_template` | Detail for one `slug` |
+| `get_register_url` | `https://re-port-flow.com/register` plus the product MCP URL |
+
+They do not copy a template into a workspace and they do not render a
+document. UI preview (PNG) is not an MCP tool.
+
 ## The shortest path to a PDF
 
+Use the **product** MCP, not this Space:
+
 ```
-list_templates  →  get_design_parameters  →  generate_pdf_sync
+list_templates  →  get_design_parameters  → generate (sync)
 ```
 
 Starting from an empty workspace, insert
-`search_gallery_templates → copy_gallery_template` to pull a template out of the
-public gallery first. Copy each template once and reuse the returned `designId`:
-every call creates a new design.
+`search_gallery_templates → copy` (once per slug) on the product MCP to pull a
+template out of the public gallery first. Reuse the returned `designId`.
 
 ## Links
 
