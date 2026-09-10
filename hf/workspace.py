@@ -126,7 +126,7 @@ def render_document(
     design_id: str,
     version: int,
     params: dict[str, Any],
-    file_name: str = "document.pdf",
+    file_name: str = "document",
     client: httpx.Client | None = None,
 ) -> dict[str, Any]:
     if "/" in design_id or ".." in design_id or not design_id.strip():
@@ -141,7 +141,7 @@ def render_document(
                 "designId": design_id.strip(),
                 "version": version,
                 "content": {
-                    "fileName": ensure_pdf_filename(file_name),
+                    "fileName": sanitize_filename(file_name),
                     "params": sanitize_params_for_render(params),
                 },
             },
@@ -222,16 +222,16 @@ _VERSION_SUFFIX = re.compile(r"\s+\(v\d+\)\s*$")
 _UNSAFE_FILENAME = re.compile(r'[/\\:*?"<>|\x00-\x1f]+')
 
 
-def filename_from_choice_label(label: str) -> str:
-    return ensure_pdf_filename(_VERSION_SUFFIX.sub("", label or "").strip())
-
-
-def ensure_pdf_filename(name: str, fallback: str = "document") -> str:
+def sanitize_filename(name: str, fallback: str = "document") -> str:
+    """Basename only. content-service adds .pdf itself — do not send it."""
     base = _UNSAFE_FILENAME.sub("", (name or "").strip()) or fallback
     if base.lower().endswith(".pdf"):
         base = base[:-4].rstrip()
-    base = base or fallback
-    return f"{base}.pdf"
+    return base or fallback
+
+
+def filename_from_choice_label(label: str) -> str:
+    return sanitize_filename(_VERSION_SUFFIX.sub("", label or "").strip())
 
 
 def sanitize_params_for_render(params: dict[str, Any]) -> dict[str, Any]:

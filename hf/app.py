@@ -39,8 +39,8 @@ from workspace import (
     design_choices,
     design_parameters,
     empty_params_template,
-    ensure_pdf_filename,
     filename_from_choice_label,
+    sanitize_filename,
     list_designs,
     parse_design_choice,
     render_document,
@@ -224,7 +224,7 @@ def _empty_workspace(
         gr.update(choices=[], value=None),
         "Sign in, then pick one of your designs. The fields below become the form.",
         "{}",
-        "document.pdf",
+        "document",
         "",
     )
 
@@ -284,7 +284,7 @@ def _workspace_form(session_id: str, prefer: str | None = None):
             gr.update(choices=[], value=None),
             "This workspace has no designs yet. Copy a public slug from the gallery above (once).",
             "{}",
-            "document.pdf",
+            "document",
             "",
         )
     selected = choices[0][1]
@@ -352,7 +352,7 @@ def load_selected_design(
     choice: str, visitor_key: str | None, request: gr.Request
 ) -> tuple[str, str, str]:
     _, _, label = (choice or "").partition("::")
-    suggested = filename_from_choice_label(label) if label else "document.pdf"
+    suggested = filename_from_choice_label(label) if label else "document"
     try:
         guide, template = _schema_for_choice(_bound(request, visitor_key), choice)
     except OAuthError as err:
@@ -392,7 +392,7 @@ def render_my_document(
             design_id,
             version,
             params,
-            ensure_pdf_filename(file_name),
+            sanitize_filename(file_name),
         )
     except (OAuthError, ValueError, json.JSONDecodeError) as err:
         return str(err)
@@ -489,7 +489,7 @@ workspace, sign in below. The Hub MCP tools on this Space stay read-only.
             value="{}",
             interactive=True,
         )
-        file_name = gr.Textbox(label="file name (.pdf is added if missing)", value="document.pdf")
+        file_name = gr.Textbox(label="file name", value="document")
         render_btn = gr.Button("Render from this workspace", variant="primary")
         render_out = gr.Markdown()
         workspace_outputs = [
