@@ -51,7 +51,7 @@ def design_parameters(
     design_id: str,
     version: int | None = None,
     client: httpx.Client | None = None,
-) -> dict[str, Any]:
+) -> list[dict[str, Any]]:
     cleaned = design_id.strip()
     if not cleaned or "/" in cleaned or ".." in cleaned:
         raise OAuthError("That design id is not valid.")
@@ -70,14 +70,12 @@ def design_parameters(
         if err.response.status_code in (401, 403):
             raise OAuthError("This workspace rejected the request. Sign in again.") from err
         raise OAuthError(f"Parameter schema returned HTTP {err.response.status_code}.") from err
-    except httpx.HTTPError as err:
+    except (httpx.HTTPError, json.JSONDecodeError, ValueError) as err:
         raise OAuthError("Could not load the parameter schema.") from err
     finally:
         if own:
             http.close()
-    if not isinstance(payload, dict):
-        raise OAuthError("Parameter schema was not JSON.")
-    return payload
+    return normalize_parameter_schema(payload)
 
 
 def copy_public_template(
@@ -170,7 +168,15 @@ def render_document(
     return {"fileUrl": file_url, "requestId": request_id, "fileId": file_id}
 
 
-_LEAF_META_KEYS = frozenset({"name", "type", "label", "description"})
+def normalize_parameter_schema(payload: Any) -> list[dict[str, Any]]:
+    """content-service returns a ParameterSpec array, not a keyed object."""
+    if not isinstance(payload, list):
+        raise OAuthError("Parameter schema was not a spec array.")
+    specs: list[dict[str, Any]] = []
+    for item in payload:
+        if isinstance(item, dict) and isinstance(item.get("name"), str) and item["name"]:
+            specs.append(item)
+    return specs
 
 
 def parse_design_choice(choice: str) -> tuple[str, int]:
@@ -203,54 +209,50 @@ def design_choices(payload: dict[str, Any]) -> list[tuple[str, str]]:
     return choices
 
 
-def _is_leaf_descriptor(spec: Any) -> bool:
-    return isinstance(spec, dict) and "type" in spec and set(spec).issubset(_LEAF_META_KEYS)
-
-
-def schema_guide(schema: dict[str, Any]) -> str:
+def schema_guide(schema: list[dict[str, Any]]) -> str:
     if not schema:
         return "This design published no parameters. You can render with `{}`."
     lines = [
         "Fill **your** values only. Do not invent names, amounts, tax IDs, or dates.",
         "",
     ]
-    for key, spec in schema.items():
-        lines.append(f"- `{key}`: {_describe_spec(spec)}")
+    for spec in schema:
+        lines.append(f"- `{spec['name']}`: {_describe_spec(spec)}")
     return "\n".join(lines)
 
 
-def _describe_spec(spec: Any) -> str:
-    if isinstance(spec, str):
-        return spec
-    if isinstance(spec, list):
-        inner = spec[0] if spec else {}
-        return f"JSON array. Example shape: `{json.dumps(_empty_value(inner), ensure_ascii=False)}`"
-    if _is_leaf_descriptor(spec):
-        parts = [str(spec.get("type") or "")]
-        if spec.get("label"):
-            parts.append(str(spec["label"]))
-        if spec.get("description"):
-            parts.append(str(spec["description"]))
-        return " — ".join(p for p in parts if p)
-    if isinstance(spec, dict):
-        return "JSON object: " + ", ".join(f"`{k}`" for k in spec)
-    return "value"
+def _describe_spec(spec: dict[str, Any]) -> str:
+    typ = str(spec.get("type") or "text")
+    parts = [typ]
+    if spec.get("label") and spec["label"] != spec.get("name"):
+        parts.append(str(spec["label"]))
+    if spec.get("description"):
+        parts.append(str(spec["description"]))
+    children = spec.get("spec")
+    if typ in ("array", "collection") and isinstance(children, list):
+        names = [
+            child.get("name")
+            for child in children
+            if isinstance(child, dict) and child.get("name")
+        ]
+        if names:
+            parts.append("row fields: " + ", ".join(f"`{n}`" for n in names))
+    return " — ".join(parts)
 
 
-def empty_params_template(schema: dict[str, Any]) -> dict[str, Any]:
+def empty_params_template(schema: list[dict[str, Any]]) -> dict[str, Any]:
     """Empty structure only. Never fills sample business data."""
-    return {key: _empty_value(spec) for key, spec in schema.items()}
+    return {spec["name"]: _empty_value(spec) for spec in schema}
 
 
-def _empty_value(spec: Any) -> Any:
-    if spec == "number" or (
-        _is_leaf_descriptor(spec) and spec.get("type") == "number"
-    ):
+def _empty_value(spec: dict[str, Any]) -> Any:
+    typ = spec.get("type")
+    if typ == "number":
         return None
-    if isinstance(spec, list):
+    if typ == "boolean":
+        return None
+    if typ in ("array", "collection"):
         return []
-    if isinstance(spec, dict) and not _is_leaf_descriptor(spec):
-        return {key: _empty_value(value) for key, value in spec.items()}
     return ""
 
 
