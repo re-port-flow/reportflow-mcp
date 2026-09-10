@@ -16,6 +16,14 @@ An MCP (Model Context Protocol) server that turns your [Re:port Flow](https://re
 - Bulk-generate many PDFs and download them as a single ZIP
 - Save outputs to whichever workspace folder the user is currently in (Claude Desktop / Claude Code / Cursor / VS Code all supported)
 
+## Agent Skill
+
+Agents that should **follow a procedure** (not just read the protocol) use
+[`skills/re-port-flow/SKILL.md`](./skills/re-port-flow/SKILL.md). Copy that
+directory into Claude Code / Codex `.agents/skills` or a Cursor project skill
+folder. PDF generation always goes to `https://mcp.re-port-flow.com/mcp`.
+The Hugging Face Space MCP is gallery-only.
+
 ## Setup
 
 Re:port Flow MCP runs in two ways — pick whichever matches your client.

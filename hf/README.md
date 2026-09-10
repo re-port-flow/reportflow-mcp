@@ -95,6 +95,7 @@ template out of the public gallery first. Reuse the returned `designId`.
 
 ## Links
 
+- **Agent Skill** — execution procedure (not a copy of this card): https://github.com/re-port-flow/reportflow-mcp/blob/main/skills/re-port-flow/SKILL.md
 - **Agent guide** — protocol, tools, OAuth, model guidance: https://github.com/re-port-flow/reportflow-mcp/blob/main/agents.md
 - **Runnable examples** — Python, JavaScript, curl: https://github.com/re-port-flow/reportflow-mcp/tree/main/examples
 - **Developer docs** — https://doc.re-port-flow.com
