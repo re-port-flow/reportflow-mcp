@@ -8,7 +8,7 @@ sdk_version: 5.50.0
 python_version: "3.12"
 app_file: app.py
 pinned: false
-short_description: Browse invoice and quotation templates (請求書・見積). Hub MCP is read-only; PDFs use the product MCP.
+short_description: Invoice/請求書 templates. Hub MCP is read-only.
 tags:
   - mcp-server
   - invoice

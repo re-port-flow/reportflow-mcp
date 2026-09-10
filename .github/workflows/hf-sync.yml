@@ -163,6 +163,17 @@ jobs:
           for needed in hf/app.py hf/gallery.py hf/oauth.py hf/workspace.py hf/requirements.txt; do
             [ -f "$needed" ] || { echo "::error::$needed is missing."; exit 1; }
           done
+          # Hub pre-receive rejects short_description longer than 60 characters.
+          # Key presence alone is not enough — #31 sync failed on this.
+          desc=$(printf '%s\n' "$front" | sed -n 's/^short_description:[[:space:]]*//p' | head -1)
+          desc=${desc#\"}; desc=${desc%\"}; desc=${desc#\'}; desc=${desc%\'}
+          if [ -n "$desc" ]; then
+            n=$(python3 -c 'import sys; print(len(sys.argv[1]))' "$desc")
+            if [ "$n" -gt 60 ]; then
+              echo "::error::short_description is $n chars; Hub limit is 60."
+              exit 1
+            fi
+          fi
           echo 'Frontmatter OK.'
 
       - name: Check HF_TOKEN is configured

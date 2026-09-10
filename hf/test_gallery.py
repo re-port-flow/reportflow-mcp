@@ -38,6 +38,13 @@ class GalleryUrlSafetyTests(unittest.TestCase):
         agents = (HF_DIR.parent / "agents.md").read_text(encoding="utf-8")
 
         self.assertIn("short_description:", readme)
+        desc = None
+        for line in readme.splitlines():
+            if line.startswith("short_description:"):
+                desc = line.split(":", 1)[1].strip().strip("\"'")
+                break
+        self.assertIsNotNone(desc)
+        self.assertLessEqual(len(desc or ""), 60)
         self.assertIn("mcp-server", readme)
         self.assertIn("invoice", readme)
         self.assertIn("請求書", readme)
