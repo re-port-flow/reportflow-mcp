@@ -292,6 +292,35 @@ client rather than to this server:
 The local stdio alternative — `npx reportflow-mcp`, which runs its own login and
 stores tokens in the OS keychain — is in the [README](./README.md#setup).
 
+## Hugging Face Hub discovery
+
+The Hub catalog of MCP tools is **public Gradio Spaces that show an MCP
+badge** ([Spaces as MCP servers](https://huggingface.co/docs/hub/spaces-mcp-servers)).
+It does not list `https://mcp.re-port-flow.com/mcp`.
+
+To add this project's Hub tools (read-only gallery):
+
+1. Open [reportflow/README](https://huggingface.co/spaces/reportflow/README).
+2. Click the grey **MCP** badge → **Add to MCP tools**.
+3. Confirm. The Space is listed under **Hub MCP settings** → **Spaces Tools**
+   (`https://huggingface.co/settings/mcp`). Calling those tools needs a
+   Hugging Face token with **READ** permission.
+
+Do not invent extra Hub settings fields. The official page names those
+steps only.
+
+PDF generate, `copy_gallery_template`, and workspace OAuth are **not** Hub
+tools. They stay on the product MCP (and the App-tab PKCE accordion, which
+is browser-only).
+
+### Funnel (definition only — numbers are not measured in this repo)
+
+```
+Hub View → Try App / gallery search → register → product MCP generate
+```
+
+If a parent-repo telemetry query is missing, write **未取得**, not `0`.
+
 ## Links
 
 - Runnable examples: [`examples/`](./examples/)
