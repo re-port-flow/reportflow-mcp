@@ -28,6 +28,8 @@ class OauthSafetyTests(unittest.TestCase):
         self.assertIn("load_selected_design", source)
         self.assertIn("reportflow-readme-visitor", source)
         self.assertNotIn("Workspace designs (JSON)", source)
+        self.assertNotIn("document.pdf", source)
+        self.assertNotIn("ensure_pdf_filename", source)
         self.assertNotIn("mcp_server", (HF_DIR / "oauth.py").read_text(encoding="utf-8"))
 
     def test_two_sessions_do_not_share_tokens(self) -> None:
@@ -138,9 +140,9 @@ class WorkspaceCallTests(unittest.TestCase):
         self.assertEqual(choices, [("Invoice  (v2)", "d1@2::Invoice")])
         self.assertEqual(workspace.parse_design_choice("d1@2::Invoice"), ("d1", 2))
         self.assertEqual(workspace.parse_design_choice("d1@2"), ("d1", 2))
-        self.assertEqual(workspace.filename_from_choice_label("Invoice  (v2)"), "Invoice.pdf")
-        self.assertEqual(workspace.ensure_pdf_filename("請求書"), "請求書.pdf")
-        self.assertEqual(workspace.ensure_pdf_filename("請求書.pdf"), "請求書.pdf")
+        self.assertEqual(workspace.filename_from_choice_label("Invoice  (v2)"), "Invoice")
+        self.assertEqual(workspace.sanitize_filename("請求書"), "請求書")
+        self.assertEqual(workspace.sanitize_filename("請求書.pdf"), "請求書")
         schema = [
             {"name": "title", "type": "text", "label": "title"},
             {"name": "amount", "type": "number", "label": "amount"},
