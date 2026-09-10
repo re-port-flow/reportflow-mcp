@@ -103,11 +103,19 @@ class WorkspaceCallTests(unittest.TestCase):
         )
         self.assertEqual(choices, [("Invoice  (v2)", "d1@2")])
         self.assertEqual(workspace.parse_design_choice("d1@2"), ("d1", 2))
-        schema = {
-            "title": "string",
-            "amount": "number",
-            "items": [{"name": "string", "price": "number"}],
-        }
+        schema = [
+            {"name": "title", "type": "text", "label": "title"},
+            {"name": "amount", "type": "number", "label": "amount"},
+            {
+                "name": "items",
+                "type": "array",
+                "label": "items",
+                "spec": [
+                    {"name": "name", "type": "text", "label": "name"},
+                    {"name": "price", "type": "number", "label": "price"},
+                ],
+            },
+        ]
         template = workspace.empty_params_template(schema)
         self.assertEqual(template["title"], "")
         self.assertIsNone(template["amount"])
@@ -117,7 +125,23 @@ class WorkspaceCallTests(unittest.TestCase):
         self.assertNotIn("example.com", dumped)
         guide = workspace.schema_guide(schema)
         self.assertIn("`title`", guide)
+        self.assertIn("`items`", guide)
         self.assertIn("do not invent", guide.lower())
+
+    def test_design_parameters_accepts_spec_array_and_rejects_object(self) -> None:
+        mock = MagicMock(spec=httpx.Client)
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = [
+            {"name": "params1", "type": "text", "label": "params1"}
+        ]
+        response.raise_for_status.return_value = None
+        mock.get.return_value = response
+        specs = workspace.design_parameters("tok", "d1", 1, client=mock)
+        self.assertEqual(specs[0]["name"], "params1")
+        with self.assertRaises(oauth.OAuthError) as ctx:
+            workspace.normalize_parameter_schema({"title": "string"})
+        self.assertIn("spec array", str(ctx.exception))
 
     def test_safe_https_url_rejects_junk(self) -> None:
         self.assertEqual(
