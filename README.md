@@ -22,7 +22,9 @@ Agents that should **follow a procedure** (not just read the protocol) use
 [`skills/re-port-flow/SKILL.md`](./skills/re-port-flow/SKILL.md). Copy that
 directory into Claude Code / Codex `.agents/skills` or a Cursor project skill
 folder. PDF generation always goes to `https://mcp.re-port-flow.com/mcp`.
-The Hugging Face Space MCP is gallery-only.
+The Hugging Face Space MCP ([org card](https://huggingface.co/reportflow))
+is gallery-only — add it from the Space **MCP** badge → **Add to MCP tools**,
+not as a substitute for the product endpoint.
 
 ## Setup
 

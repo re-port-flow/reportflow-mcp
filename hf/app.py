@@ -155,9 +155,9 @@ def search_gallery_templates(
     category: str = "",
     sort: str = "popular",
 ) -> str:
-    """Search the public Re:port Flow template gallery (read-only, no login).
+    """Search public invoice / quotation / 請求書 / 見積 templates (read-only).
 
-    Does not copy a template or render a filled document. For those, the caller
+    Does not copy a template or render a filled PDF. For those, the caller
     must sign up and use the product MCP server in the returned mcpUrl.
 
     Args:
@@ -178,10 +178,10 @@ def search_gallery_templates(
 
 
 def get_gallery_template(slug: str) -> str:
-    """Get one public template by slug (read-only, no login).
+    """Get one public invoice/quotation/請求書 template by slug (read-only).
 
     The slug is not a workspace designId. This Space never copies a template
-    or renders a filled document.
+    or renders a filled PDF.
 
     Args:
         slug: Template slug from search_gallery_templates.
@@ -197,10 +197,10 @@ def get_gallery_template(slug: str) -> str:
 
 
 def get_register_url() -> str:
-    """Return the free-registration URL and the product MCP endpoint.
+    """Return the signup URL and the product MCP that generates invoice PDFs.
 
-    Use this when the user wants to create a filled document. This Space
-    cannot do that.
+    Use this when the user wants a filled 請求書 or other business PDF.
+    This Space's Hub tools cannot generate.
     """
     return json.dumps(mcp_register(), ensure_ascii=False)
 

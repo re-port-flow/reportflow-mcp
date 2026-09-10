@@ -32,6 +32,31 @@ class GalleryUrlSafetyTests(unittest.TestCase):
         self.assertIn("get_gallery_template", source)
         self.assertIn("get_register_url", source)
 
+    def test_hub_discovery_copy_and_tool_docs(self) -> None:
+        readme = (HF_DIR / "README.md").read_text(encoding="utf-8")
+        source = (HF_DIR / "app.py").read_text(encoding="utf-8")
+        agents = (HF_DIR.parent / "agents.md").read_text(encoding="utf-8")
+
+        self.assertIn("short_description:", readme)
+        self.assertIn("mcp-server", readme)
+        self.assertIn("invoice", readme)
+        self.assertIn("請求書", readme)
+        self.assertIn("Add to MCP tools", readme)
+        self.assertIn("Spaces Tools", readme)
+        self.assertIn("does not list", readme)
+        self.assertIn("skills/re-port-flow/SKILL.md", readme)
+        self.assertIn("https://huggingface.co/docs/hub/spaces-mcp-servers", readme)
+
+        for fragment in ("invoice", "請求書"):
+            self.assertIn(fragment, source)
+        self.assertNotIn("generate_pdf", source)
+
+        self.assertIn("Add to MCP tools", agents)
+        self.assertIn("Spaces Tools", agents)
+        self.assertIn("does not list", agents)
+        self.assertIn("Hub View", agents)
+        self.assertIn("未取得", agents)
+
 
 class SearchTemplatesTests(unittest.TestCase):
     def test_filters_by_query_and_does_not_follow_cursor_forever(self) -> None:

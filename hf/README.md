@@ -8,6 +8,13 @@ sdk_version: 5.50.0
 python_version: "3.12"
 app_file: app.py
 pinned: false
+short_description: Browse invoice and quotation templates (請求書・見積). Hub MCP is read-only; PDFs use the product MCP.
+tags:
+  - mcp-server
+  - invoice
+  - quotation
+  - pdf
+  - business
 ---
 
 <!-- Source of truth: hf/ in re-port-flow/reportflow-mcp.
@@ -16,10 +23,12 @@ pinned: false
 # Re:port Flow
 
 This Space is the [reportflow](https://huggingface.co/reportflow) organization
-card and a public-template browser. Hub MCP tools stay read-only and store
-no API keys. After you sign in on the App tab, the accordion can list
-**your** designs and render a filled document. Agents should still use the
-product MCP below.
+card and a public-template browser (invoices, quotations, 請求書, 見積書).
+Hub MCP tools stay read-only and store no API keys. After you sign in on the
+App tab, the accordion can list **your** designs and render a filled document.
+Agents that should fill a PDF still use the **product** MCP and the
+[Agent Skill](https://github.com/re-port-flow/reportflow-mcp/blob/main/skills/re-port-flow/SKILL.md)
+— not this Space's three Hub tools.
 
 Business PDFs — invoices, quotations, delivery notes, statements — generated
 from reusable templates, by an AI agent, in one turn.
@@ -61,8 +70,21 @@ config nests under a `config` key rather than taking flat arguments.
 
 ## This Space as a Hub MCP server
 
-Gradio is launched with `mcp_server=True`. Hub clients can add the Space via
-the MCP badge, or:
+The Hub catalog of MCP tools is **Gradio Spaces that show an MCP badge**.
+It does not list `https://mcp.re-port-flow.com/mcp`. That product endpoint
+is added as a custom connector (or a header on `MCPClient`), not via the
+badge.
+
+Official add path ([Spaces as MCP servers](https://huggingface.co/docs/hub/spaces-mcp-servers)):
+
+1. Open this Space (`reportflow/README`) and use the grey **MCP** badge, or
+   browse MCP-compatible Spaces.
+2. Choose **Add to MCP tools** and confirm.
+3. The Space appears under **Hub MCP settings** → **Spaces Tools**
+   (`https://huggingface.co/settings/mcp`). A Hugging Face token with
+   **READ** permission is required to call Hub MCP tools.
+
+Gradio is launched with `mcp_server=True`. The same schema is also at:
 
 `https://reportflow-readme.hf.space/gradio_api/mcp/`
 

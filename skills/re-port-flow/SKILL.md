@@ -66,3 +66,5 @@ Product MCP: OAuth 2.0 Bearer from `https://mcp.re-port-flow.com` (DCR + PKCE). 
 ## Install this skill
 
 Copy `skills/re-port-flow/` into the agent's skill directory (Claude Code / Codex `.agents/skills`, Cursor project skills). Point the client at `https://mcp.re-port-flow.com/mcp`, not at the Space MCP, when the user wants a PDF.
+
+On Hugging Face Hub the org card is [reportflow](https://huggingface.co/reportflow) (`reportflow/README`). That Space's MCP badge adds **gallery search only**. The Skill file lives in this GitHub repository; Hub does not host it.
