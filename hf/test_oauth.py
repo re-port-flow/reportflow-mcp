@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -25,6 +26,7 @@ class OauthSafetyTests(unittest.TestCase):
         self.assertIn("start_sign_in", source)
         self.assertIn("reload_my_designs", source)
         self.assertIn("load_selected_design", source)
+        self.assertIn("reportflow-readme-visitor", source)
         self.assertNotIn("Workspace designs (JSON)", source)
         self.assertNotIn("mcp_server", (HF_DIR / "oauth.py").read_text(encoding="utf-8"))
 
@@ -70,6 +72,38 @@ class OauthSafetyTests(unittest.TestCase):
     def test_finish_rejects_unknown_state(self) -> None:
         with self.assertRaises(oauth.OAuthError):
             oauth.finish_authorization("sess", code="abc", state="nope")
+
+    def test_visitor_id_survives_a_new_gradio_hash(self) -> None:
+        oauth._store_tokens(
+            "visitor-1",
+            {"access_token": "keep-me", "expires_in": 3600},
+        )
+        self.assertEqual(oauth.resolve_session("hash-b", "visitor-1"), "visitor-1")
+        self.assertEqual(oauth.access_token_for("hash-b", "visitor-1"), "keep-me")
+
+    def test_refresh_replaces_expired_access_token(self) -> None:
+        oauth._client_id = "dcr-test"
+        oauth._store_tokens(
+            "sess",
+            {
+                "access_token": "old-token",
+                "refresh_token": "rt",
+                "expires_in": 3600,
+            },
+        )
+        oauth._sessions["sess"].expires_at = time.time() - 1
+        mock = MagicMock(spec=httpx.Client)
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "access_token": "new-token",
+            "expires_in": 3600,
+        }
+        response.raise_for_status.return_value = None
+        mock.post.return_value = response
+        self.assertEqual(oauth.access_token_for("sess", client=mock), "new-token")
+        self.assertEqual(mock.post.call_args.kwargs["data"]["grant_type"], "refresh_token")
+        self.assertEqual(mock.post.call_args.kwargs["data"]["resource"], oauth.MCP_RESOURCE)
 
 
 class WorkspaceCallTests(unittest.TestCase):
