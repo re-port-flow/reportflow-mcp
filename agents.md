@@ -9,6 +9,9 @@ VS Code), start at the [README](./README.md) instead. This file is about
 driving the server programmatically.
 
 Runnable code for everything below lives in [`examples/`](./examples/).
+The step-by-step **Skill** an agent should follow is
+[`skills/re-port-flow/SKILL.md`](./skills/re-port-flow/SKILL.md) — do not
+treat this file as that Skill.
 
 ## Endpoint
 
