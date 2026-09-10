@@ -101,8 +101,12 @@ class WorkspaceCallTests(unittest.TestCase):
                 ]
             }
         )
-        self.assertEqual(choices, [("Invoice  (v2)", "d1@2")])
+        self.assertEqual(choices, [("Invoice  (v2)", "d1@2::Invoice")])
+        self.assertEqual(workspace.parse_design_choice("d1@2::Invoice"), ("d1", 2))
         self.assertEqual(workspace.parse_design_choice("d1@2"), ("d1", 2))
+        self.assertEqual(workspace.filename_from_choice_label("Invoice  (v2)"), "Invoice.pdf")
+        self.assertEqual(workspace.ensure_pdf_filename("請求書"), "請求書.pdf")
+        self.assertEqual(workspace.ensure_pdf_filename("請求書.pdf"), "請求書.pdf")
         schema = [
             {"name": "title", "type": "text", "label": "title"},
             {"name": "amount", "type": "number", "label": "amount"},
@@ -118,15 +122,19 @@ class WorkspaceCallTests(unittest.TestCase):
         ]
         template = workspace.empty_params_template(schema)
         self.assertEqual(template["title"], "")
-        self.assertIsNone(template["amount"])
-        self.assertEqual(template["items"], [])
+        self.assertNotIn("amount", template)
+        self.assertNotIn("items", template)
         dumped = json.dumps(template)
+        self.assertNotIn("null", dumped)
         self.assertNotIn("Acme", dumped)
-        self.assertNotIn("example.com", dumped)
         guide = workspace.schema_guide(schema)
         self.assertIn("`title`", guide)
         self.assertIn("`items`", guide)
         self.assertIn("do not invent", guide.lower())
+        sanitized = workspace.sanitize_params_for_render(
+            {"title": "実在の値", "amount": None, "empty": ""}
+        )
+        self.assertEqual(sanitized, {"title": "実在の値"})
 
     def test_design_parameters_accepts_spec_array_and_rejects_object(self) -> None:
         mock = MagicMock(spec=httpx.Client)

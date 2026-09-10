@@ -7,6 +7,7 @@ returned in these payloads.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 from urllib.parse import unquote
 
@@ -139,14 +140,19 @@ def render_document(
             json={
                 "designId": design_id.strip(),
                 "version": version,
-                "content": {"fileName": file_name, "params": params},
+                "content": {
+                    "fileName": ensure_pdf_filename(file_name),
+                    "params": sanitize_params_for_render(params),
+                },
             },
         )
         response.raise_for_status()
     except httpx.HTTPStatusError as err:
         if err.response.status_code in (401, 403):
             raise OAuthError("Render was denied for this workspace.") from err
-        raise OAuthError(f"Render returned HTTP {err.response.status_code}.") from err
+        raise OAuthError(
+            f"Render failed: {_response_message(err.response)}"
+        ) from err
     except httpx.HTTPError as err:
         raise OAuthError("Could not render the document.") from err
     finally:
@@ -180,11 +186,12 @@ def normalize_parameter_schema(payload: Any) -> list[dict[str, Any]]:
 
 
 def parse_design_choice(choice: str) -> tuple[str, int]:
-    """Parse a dropdown value `designId@version`."""
+    """Parse a dropdown value `designId@version` or `designId@version::label`."""
     raw = (choice or "").strip()
-    if not raw or "/" in raw or ".." in raw:
+    main, _, _label = raw.partition("::")
+    if not main or "/" in main or ".." in main:
         raise OAuthError("Pick a design from the list.")
-    design_id, sep, version = raw.partition("@")
+    design_id, sep, version = main.partition("@")
     if not sep or not design_id or not version.isdigit():
         raise OAuthError("Pick a design from the list.")
     return design_id, int(version)
@@ -205,8 +212,65 @@ def design_choices(payload: dict[str, Any]) -> list[tuple[str, str]]:
         if not isinstance(version, int) or version < 1:
             continue
         label = item.get("label") if isinstance(item.get("label"), str) else design_id
-        choices.append((f"{label}  (v{version})", f"{design_id}@{version}"))
+        choices.append(
+            (f"{label}  (v{version})", f"{design_id}@{version}::{label}")
+        )
     return choices
+
+
+_VERSION_SUFFIX = re.compile(r"\s+\(v\d+\)\s*$")
+_UNSAFE_FILENAME = re.compile(r'[/\\:*?"<>|\x00-\x1f]+')
+
+
+def filename_from_choice_label(label: str) -> str:
+    return ensure_pdf_filename(_VERSION_SUFFIX.sub("", label or "").strip())
+
+
+def ensure_pdf_filename(name: str, fallback: str = "document") -> str:
+    base = _UNSAFE_FILENAME.sub("", (name or "").strip()) or fallback
+    if base.lower().endswith(".pdf"):
+        base = base[:-4].rstrip()
+    base = base or fallback
+    return f"{base}.pdf"
+
+
+def sanitize_params_for_render(params: dict[str, Any]) -> dict[str, Any]:
+    """Drop null/empty values. content-service 400s on null or '' for numbers."""
+    cleaned: dict[str, Any] = {}
+    for key, value in params.items():
+        if value is None or value == "":
+            continue
+        if isinstance(value, dict):
+            nested = sanitize_params_for_render(value)
+            if nested:
+                cleaned[key] = nested
+            continue
+        if isinstance(value, list):
+            rows = [
+                sanitize_params_for_render(row)
+                for row in value
+                if isinstance(row, dict)
+            ]
+            rows = [row for row in rows if row]
+            if rows:
+                cleaned[key] = rows
+            continue
+        cleaned[key] = value
+    return cleaned
+
+
+def _response_message(response: httpx.Response) -> str:
+    try:
+        body = response.json()
+    except (json.JSONDecodeError, ValueError):
+        return f"HTTP {response.status_code}"
+    if isinstance(body, dict):
+        message = body.get("message") or body.get("error")
+        if isinstance(message, list):
+            message = "; ".join(str(part) for part in message)
+        if isinstance(message, str) and message:
+            return message[:500]
+    return f"HTTP {response.status_code}"
 
 
 def schema_guide(schema: list[dict[str, Any]]) -> str:
@@ -241,19 +305,14 @@ def _describe_spec(spec: dict[str, Any]) -> str:
 
 
 def empty_params_template(schema: list[dict[str, Any]]) -> dict[str, Any]:
-    """Empty structure only. Never fills sample business data."""
-    return {spec["name"]: _empty_value(spec) for spec in schema}
-
-
-def _empty_value(spec: dict[str, Any]) -> Any:
-    typ = spec.get("type")
-    if typ == "number":
-        return None
-    if typ == "boolean":
-        return None
-    if typ in ("array", "collection"):
-        return []
-    return ""
+    """Text/date keys only, empty. Omit number/boolean/array — those 400 if null."""
+    template: dict[str, Any] = {}
+    for spec in schema:
+        typ = spec.get("type")
+        if typ in ("number", "boolean", "array", "collection"):
+            continue
+        template[spec["name"]] = ""
+    return template
 
 
 def safe_https_url(url: str | None) -> str | None:

@@ -38,6 +38,8 @@ from workspace import (
     design_choices,
     design_parameters,
     empty_params_template,
+    ensure_pdf_filename,
+    filename_from_choice_label,
     list_designs,
     parse_design_choice,
     render_document,
@@ -211,12 +213,13 @@ def _session_id(request: gr.Request) -> str:
 
 def _empty_workspace(
     status: str,
-) -> tuple[str, dict, str, str, str]:
+) -> tuple[str, dict, str, str, str, str]:
     return (
         status,
         gr.update(choices=[], value=None),
         "Sign in, then pick one of your designs. The fields below become the form.",
         "{}",
+        "document.pdf",
         "",
     )
 
@@ -267,15 +270,25 @@ def _workspace_form(session_id: str, prefer: str | None = None):
             gr.update(choices=[], value=None),
             "This workspace has no designs yet. Copy a public slug from the gallery above (once).",
             "{}",
+            "document.pdf",
             "",
         )
-    selected = prefer if prefer and any(value == prefer for _, value in choices) else choices[0][1]
+    selected = choices[0][1]
+    if prefer:
+        for _label, value in choices:
+            if value == prefer or value.startswith(f"{prefer}::"):
+                selected = value
+                break
+    selected_label = next(
+        (label for label, value in choices if value == selected), "document"
+    )
     guide, template = _schema_for_choice(session_id, selected)
     return (
         status,
         gr.update(choices=choices, value=selected),
         guide,
         template,
+        filename_from_choice_label(selected_label),
         "",
     )
 
@@ -321,11 +334,14 @@ def reload_my_designs(request: gr.Request):
         return _empty_workspace(str(err))
 
 
-def load_selected_design(choice: str, request: gr.Request) -> tuple[str, str]:
+def load_selected_design(choice: str, request: gr.Request) -> tuple[str, str, str]:
+    _, _, label = (choice or "").partition("::")
+    suggested = filename_from_choice_label(label) if label else "document.pdf"
     try:
-        return _schema_for_choice(_session_id(request), choice)
+        guide, template = _schema_for_choice(_session_id(request), choice)
     except OAuthError as err:
-        return str(err), "{}"
+        return str(err), "{}", suggested
+    return guide, template, suggested
 
 
 def copy_slug_into_workspace(slug: str, request: gr.Request):
@@ -357,7 +373,7 @@ def render_my_document(
             design_id,
             version,
             params,
-            file_name or "document.pdf",
+            ensure_pdf_filename(file_name),
         )
     except (OAuthError, ValueError, json.JSONDecodeError) as err:
         return str(err)
@@ -449,7 +465,7 @@ workspace, sign in below. The Hub MCP tools on this Space stay read-only.
             value="{}",
             interactive=True,
         )
-        file_name = gr.Textbox(label="file name", value="document.pdf")
+        file_name = gr.Textbox(label="file name (.pdf is added if missing)", value="document.pdf")
         render_btn = gr.Button("Render from this workspace", variant="primary")
         render_out = gr.Markdown()
         workspace_outputs = [
@@ -457,6 +473,7 @@ workspace, sign in below. The Hub MCP tools on this Space stay read-only.
             design_pick,
             schema_md,
             params_box,
+            file_name,
             render_out,
         ]
         demo.load(
@@ -481,7 +498,7 @@ workspace, sign in below. The Hub MCP tools on this Space stay read-only.
         design_pick.change(
             fn=load_selected_design,
             inputs=[design_pick],
-            outputs=[schema_md, params_box],
+            outputs=[schema_md, params_box, file_name],
             show_api=False,
         )
         render_btn.click(
