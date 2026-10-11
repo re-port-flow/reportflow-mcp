@@ -22,7 +22,12 @@ set -euo pipefail
 AS="${RF_AUTH_SERVER:-https://mcp.re-port-flow.com}"
 RESOURCE="${RF_RESOURCE:-https://mcp.re-port-flow.com}"
 REDIRECT_URI="${RF_REDIRECT_URI:-http://localhost:8765/callback}"
-SCOPE="${RF_SCOPE:-openid profile templates:read designs:read designs:write pdf:generate}"
+# This script registers a public client via DCR, so the authorization server
+# caps it at the scopes a dynamically registered client may hold. Asking for
+# anything outside that set (designs:read, templates:*) makes /authorize fail
+# with scope_not_allowed. Keep this in step with SUPPORTED_SCOPES in
+# ../../src/config.ts.
+SCOPE="${RF_SCOPE:-openid profile designs:write pdf:generate}"
 
 for cmd in curl jq openssl; do
   command -v "$cmd" >/dev/null || { echo "missing dependency: $cmd" >&2; exit 1; }

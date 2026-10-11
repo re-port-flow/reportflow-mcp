@@ -24,10 +24,12 @@ OAUTH_ISSUER = "https://re-port-flow.com/api/v1"
 MCP_AS = "https://mcp.re-port-flow.com"
 MCP_RESOURCE = "https://mcp.re-port-flow.com"
 API_BASE = "https://api.re-port-flow.com"
-SCOPE = (
-    "openid profile designs:read designs:write "
-    "templates:read templates:write pdf:generate"
-)
+# The Space registers itself through DCR (register_public_client), so the
+# authorization server caps it at the scopes a dynamically registered client
+# may hold. Asking for anything outside that set (designs:read, templates:*)
+# makes the authorize step fail with scope_not_allowed. Keep this in step with
+# SUPPORTED_SCOPES in ../src/config.ts.
+SCOPE = "openid profile designs:write pdf:generate"
 CLIENT_NAME = "reportflow-readme-space"
 APP_KEY = "reportflow-mcp"
 

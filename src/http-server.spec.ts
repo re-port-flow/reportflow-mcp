@@ -187,9 +187,15 @@ describe('http-server', () => {
       expect(res.body.resource).toBe(MCP_RESOURCE_URL);
       expect(res.body.authorization_servers).toEqual([MCP_RESOURCE_URL]);
       expect(res.body.bearer_methods_supported).toEqual(['header']);
-      expect(res.body.scopes_supported).toEqual(
-        expect.arrayContaining(['openid', 'profile', 'pdf:generate']),
-      );
+      // 完全一致で固定する。`arrayContaining` だと、広告集合に
+      // `designs:read` 等（reposts-api の匿名クライアント上限の外。
+      // `authorize` が 400 で拒否する）が戻っても通ってしまう（PRJ-3-1522）。
+      expect(res.body.scopes_supported).toEqual([
+        'openid',
+        'profile',
+        'designs:write',
+        'pdf:generate',
+      ]);
     });
 
     it('Cache-Control が付与される', async () => {

@@ -182,7 +182,13 @@ https://mcp.re-port-flow.com/.well-known/oauth-authorization-server (RFC 8414)
 | PKCE | `S256` (required) |
 | Client authentication | `none` — public clients only, no client secret |
 | Grants | `authorization_code`, `refresh_token` |
-| Scopes | `openid`, `profile`, `designs:read`, `designs:write`, `templates:read`, `templates:write`, `pdf:generate` |
+| Scopes | `openid`, `profile`, `designs:write`, `pdf:generate` |
+
+Those four are the whole set a dynamically registered client may hold. Ask for
+anything outside it — `designs:read`, `templates:read`, `templates:write` — and
+`GET /authorize` fails with `scope_not_allowed`: the authorization server caps
+DCR clients and rejects the excess rather than trimming it. No endpoint requires
+those three, so nothing is lost by leaving them out.
 
 An MCP client with built-in OAuth (claude.ai, Claude Desktop) runs this for you.
 Agent SDKs generally do **not** — the Hugging Face SDK has no MCP OAuth flow —

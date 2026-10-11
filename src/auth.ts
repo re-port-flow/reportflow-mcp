@@ -8,6 +8,7 @@ import {
   generateCodeVerifier,
   generateState,
 } from './pkce.js';
+import { SUPPORTED_SCOPE_STRING } from './config.js';
 import { recordCredentialWorkspace } from './telemetry/workspace.js';
 import { createTokenStore, TokenSet } from './token-store/index.js';
 
@@ -15,8 +16,9 @@ const DEFAULT_AUTH_URL = 'https://re-port-flow.com/api/v1';
 // 公式 Re:port Flow MCP の OAuth client_id (Re:port Flow 側で配布済の Public client)。
 // 環境変数 REPORTFLOW_CLIENT_ID で上書き可能。
 const DEFAULT_CLIENT_ID = 'reportflow-mcp';
-const DEFAULT_SCOPE =
-  'openid profile designs:read designs:write templates:read templates:write pdf:generate';
+// 要求 scope は広告集合（`SUPPORTED_SCOPES`）と同じ 1 箇所から導く。ここに
+// リテラルを置き直すと、広告だけ縮めたときに要求が取り残される（PRJ-3-1522）。
+const DEFAULT_SCOPE = SUPPORTED_SCOPE_STRING;
 const DEFAULT_CALLBACK_PORT = 53682;
 const TOKEN_EXPIRY_BUFFER_MS = 60_000;
 
