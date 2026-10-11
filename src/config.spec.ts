@@ -67,10 +67,7 @@ describe('config stage resolution', () => {
       expect(prm.scopes_supported).toEqual([
         'openid',
         'profile',
-        'designs:read',
         'designs:write',
-        'templates:read',
-        'templates:write',
         'pdf:generate',
       ]);
       expect(prm.bearer_methods_supported).toEqual(['header']);
@@ -85,15 +82,18 @@ describe('config stage resolution', () => {
     jest.isolateModules(() => {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const config = require('./config') as typeof import('./config');
+      // reposts-api の `ANONYMOUS_CLIENT_SCOPES` と同じ 4 つ。ここを広げると
+      // DCR 経由のクライアントが `authorize` で 400 になる（PRJ-3-1522）。
       expect(config.SUPPORTED_SCOPES).toEqual([
         'openid',
         'profile',
-        'designs:read',
         'designs:write',
-        'templates:read',
-        'templates:write',
         'pdf:generate',
       ]);
+      // 要求 scope が広告集合から導かれていること（別リテラルに戻すと落ちる）
+      expect(config.SUPPORTED_SCOPE_STRING).toBe(
+        'openid profile designs:write pdf:generate',
+      );
     });
   });
 });
