@@ -1,14 +1,13 @@
 import open from 'open';
 import { startCallbackServer } from './auth-server.js';
 import { getHttpAuthContext } from './auth-context.js';
-import { fetchJson, HttpError } from './http.js';
+import { fetchJson, HttpError, WRITE_REJECTED_STATUSES } from './http.js';
 import { decodeJwtPayload } from './jwt.js';
 import {
   generateCodeChallenge,
   generateCodeVerifier,
   generateState,
 } from './pkce.js';
-import { SUPPORTED_SCOPE_STRING } from './config.js';
 import { recordCredentialWorkspace } from './telemetry/workspace.js';
 import { createTokenStore, TokenSet } from './token-store/index.js';
 
@@ -16,9 +15,10 @@ const DEFAULT_AUTH_URL = 'https://re-port-flow.com/api/v1';
 // 公式 Re:port Flow MCP の OAuth client_id (Re:port Flow 側で配布済の Public client)。
 // 環境変数 REPORTFLOW_CLIENT_ID で上書き可能。
 const DEFAULT_CLIENT_ID = 'reportflow-mcp';
-// 要求 scope は広告集合（`SUPPORTED_SCOPES`）と同じ 1 箇所から導く。ここに
-// リテラルを置き直すと、広告だけ縮めたときに要求が取り残される（PRJ-3-1522）。
-const DEFAULT_SCOPE = SUPPORTED_SCOPE_STRING;
+// 最小権限（PRJ-3-1522）。内訳の根拠は config.ts の SUPPORTED_SCOPES を参照。
+// designs:read / templates:read / templates:write は reposts-api・content-service
+// のどちらでも宣言・検査が無く認可に関与しないため要求しない。
+const DEFAULT_SCOPE = 'openid profile designs:write pdf:generate';
 const DEFAULT_CALLBACK_PORT = 53682;
 const TOKEN_EXPIRY_BUFFER_MS = 60_000;
 
@@ -45,7 +45,26 @@ export class AuthRequiredError extends Error {
    */
   readonly mode: 'stdio' | 'http';
 
-  constructor(detail?: string, mode: 'stdio' | 'http' = 'stdio') {
+  /**
+   * **書き込みリクエストを実際に送った後**の失敗か。
+   *
+   * `requestWithAuth` は 401 を受けると token を refresh して `fn` を再送するが、
+   * その再送で起きたエラー (タイムアウト / 5xx / 不正 JSON) もここで
+   * `AuthRequiredError` に化ける。**サーバー側では書き込みが完了している
+   * 可能性がある**ので、呼び出し側 (copy-gallery-template) は「失敗が確定した」
+   * とは記録できない。
+   *
+   * 逆に 401 そのもの・refresh 前の失敗・トークン欠如は**再送していない**ので
+   * 書き込みは起きていない。全部まとめて不明にすると、確定した認証失敗が
+   * 失敗件数から消える (PR #117 の Codex 指摘)。
+   */
+  readonly retryAttempted: boolean;
+
+  constructor(
+    detail?: string,
+    mode: 'stdio' | 'http' = 'stdio',
+    retryAttempted = false,
+  ) {
     const action =
       mode === 'http'
         ? 'クライアント側で OAuth トークンを再取得してください (claude.ai / n8n / Make 等の OAuth 設定を確認)'
@@ -57,6 +76,7 @@ export class AuthRequiredError extends Error {
     );
     this.name = 'AuthRequiredError';
     this.mode = mode;
+    this.retryAttempted = retryAttempted;
   }
 }
 
@@ -303,15 +323,36 @@ export const requestWithAuth = async <T>(
       const store = createTokenStore();
       const cached = await store.load(config.clientId);
       if (!cached) throw new AuthRequiredError('401 後にトークン無し');
+      // refresh の失敗と**再送の失敗**は分けて捕まえる。同じ try に入れると、
+      // 「再送していないので書き込みは起きていない」失敗まで
+      // `retryAttempted` になり、確定した失敗を不明として記録してしまう。
+      let fresh: TokenSet;
       try {
-        const fresh = await refreshTokens(config, cached.refreshToken);
+        fresh = await refreshTokens(config, cached.refreshToken);
         await store.save(config.clientId, fresh);
         rememberWorkspace(fresh);
-        return await fn({ Authorization: `Bearer ${fresh.accessToken}` });
       } catch (refreshErr) {
         const detail =
           refreshErr instanceof Error ? refreshErr.message : String(refreshErr);
         throw new AuthRequiredError(`401 後の refresh 失敗 (${detail})`);
+      }
+      try {
+        return await fn({ Authorization: `Bearer ${fresh.accessToken}` });
+      } catch (retryErr) {
+        const detail =
+          retryErr instanceof Error ? retryErr.message : String(retryErr);
+        // 再送した = 常に不明、ではない。retry が 401/403/404/412/429 を返した
+        // なら**サーバーが拒否した**ことが確定しており、書き込みは起きていない。
+        // ここを一律 true にすると、確定した拒否まで「結果不明」として記録され
+        // 失敗件数から消える (PR #117 の Codex 指摘)。
+        const definitelyRejected =
+          retryErr instanceof HttpError &&
+          WRITE_REJECTED_STATUSES.has(retryErr.status);
+        throw new AuthRequiredError(
+          `401 後の再試行失敗 (${detail})`,
+          'stdio',
+          !definitelyRejected,
+        );
       }
     }
     throw err;

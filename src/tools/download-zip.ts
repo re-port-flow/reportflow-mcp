@@ -1,9 +1,10 @@
 import { downloadZip } from '../client.js';
+import { downloadErrorResult } from './download-errors.js';
 
 export const downloadZipTool = {
   name: 'download_zip',
   description:
-    'generate_pdfs_asyncで生成したZIPファイルをダウンロードします。requestIdを指定し、ローカルのZIPファイルパスを返します。outputDir を指定するとそのディレクトリに、未指定の場合は現在の作業ディレクトリに保存します。',
+    'generate_pdfs_asyncで出力したPDFをまとめたZIPファイルをダウンロードします。requestIdを指定し、ローカルのZIPファイルパスを返します。outputDir を指定するとそのディレクトリに、未指定の場合は現在の作業ディレクトリに保存します。まだ生成中の場合はダウンロードせず FILE_NOT_READY と再試行までの秒数 (retryAfterSeconds) を返すので、その秒数をおいて再度呼び出してください。生成が失敗している場合は FILE_GENERATION_FAILED を返します (get_generation_status で理由を確認)。',
 };
 
 export type DownloadZipInput = {
@@ -46,10 +47,7 @@ export const handleDownloadZip = async (
       ],
     };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return {
-      content: [{ type: 'text', text: `エラー: ${message}` }],
-      isError: true,
-    };
+    // 生成中 (409) / 生成失敗 (422) / ID の誤り (404) を返し分ける (PRJ-3-2018)。
+    return downloadErrorResult(err, 'download_zip', input.requestId);
   }
 };

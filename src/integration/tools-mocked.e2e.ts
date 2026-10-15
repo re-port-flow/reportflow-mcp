@@ -141,7 +141,9 @@ describe('tools/call with mocked fetch (Layer A)', () => {
       const pdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46]); // %PDF
       const headers = new Headers({
         'Content-Type': 'application/pdf',
-        'File-URL': 'https://api.re-port-flow.com/v1/file/download/req-001',
+        // File-URL は Web アプリの出力履歴画面 (直接ダウンロード URL ではない)
+        'File-URL':
+          'https://re-port-flow.com/ws-001/templates/design-uuid-001/outputs?requestId=req-001',
         'Request-Id': 'req-001',
         'X-File-Mapping': encodeURIComponent(
           JSON.stringify([{ fileId: 'file-001', fileName: 'invoice.pdf' }]),

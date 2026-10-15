@@ -173,6 +173,95 @@ describe('requestWithAuth', () => {
     await expect(requestWithAuth(fn)).rejects.toThrow('Boom');
     expect(fn).toHaveBeenCalledTimes(1);
   });
+
+  // retryAttempted は「書き込みを送った後の失敗か」を呼び出し側へ伝える印。
+  // 立て方を誤ると、書き込みが起きていないと分かっている認証失敗まで
+  // 「結果不明」として記録される（PR #117 の Codex 指摘）
+  it('marks retryAttempted when the retried request fails', async () => {
+    mockStore.load
+      .mockResolvedValueOnce(baseTokens({ accessToken: 'old' }))
+      .mockResolvedValueOnce(baseTokens({ accessToken: 'old' }));
+    mockFetch.mockResolvedValueOnce(tokenJsonResponse('refreshed', 3600));
+    const fn = jest
+      .fn()
+      .mockRejectedValueOnce(new HttpError(401, 'Unauthorized'))
+      .mockRejectedValueOnce(new Error('timeout'));
+    await expect(requestWithAuth(fn)).rejects.toMatchObject({
+      name: 'AuthRequiredError',
+      retryAttempted: true,
+    });
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([401, 403, 404, 412, 429])(
+    'does not mark retryAttempted when the retry is definitively rejected with %i',
+    async (status) => {
+      // 再送した = 常に不明、ではない。サーバーが拒否したと確定できる応答まで
+      // 「結果不明」にすると、確定した失敗が失敗件数から消える（PR #117 の Codex 指摘）
+      mockStore.load
+        .mockResolvedValueOnce(baseTokens({ accessToken: 'old' }))
+        .mockResolvedValueOnce(baseTokens({ accessToken: 'old' }));
+      mockFetch.mockResolvedValueOnce(tokenJsonResponse('refreshed', 3600));
+      const fn = jest
+        .fn()
+        .mockRejectedValueOnce(new HttpError(401, 'Unauthorized'))
+        .mockRejectedValueOnce(new HttpError(status, 'Rejected'));
+      await expect(requestWithAuth(fn)).rejects.toMatchObject({
+        name: 'AuthRequiredError',
+        retryAttempted: false,
+      });
+      expect(fn).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each([500, 502, 504])(
+    'marks retryAttempted when the retry fails with %i (write may have happened)',
+    async (status) => {
+      mockStore.load
+        .mockResolvedValueOnce(baseTokens({ accessToken: 'old' }))
+        .mockResolvedValueOnce(baseTokens({ accessToken: 'old' }));
+      mockFetch.mockResolvedValueOnce(tokenJsonResponse('refreshed', 3600));
+      const fn = jest
+        .fn()
+        .mockRejectedValueOnce(new HttpError(401, 'Unauthorized'))
+        .mockRejectedValueOnce(new HttpError(status, 'Server error'));
+      await expect(requestWithAuth(fn)).rejects.toMatchObject({
+        name: 'AuthRequiredError',
+        retryAttempted: true,
+      });
+    },
+  );
+
+  it('does not mark retryAttempted when refresh itself fails', async () => {
+    mockStore.load
+      .mockResolvedValueOnce(baseTokens())
+      .mockResolvedValueOnce(baseTokens());
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      statusText: 'Bad Request',
+      json: () => Promise.resolve({ error: 'invalid_grant' }),
+    } as unknown as Response);
+    const fn = jest.fn().mockRejectedValue(new HttpError(401, 'Unauthorized'));
+    await expect(requestWithAuth(fn)).rejects.toMatchObject({
+      name: 'AuthRequiredError',
+      retryAttempted: false,
+    });
+    // 再送していない = サーバーへ書き込みは届いていない
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not mark retryAttempted when there is no cached token', async () => {
+    mockStore.load
+      .mockResolvedValueOnce(baseTokens())
+      .mockResolvedValueOnce(null);
+    const fn = jest.fn().mockRejectedValue(new HttpError(401, 'Unauthorized'));
+    await expect(requestWithAuth(fn)).rejects.toMatchObject({
+      name: 'AuthRequiredError',
+      retryAttempted: false,
+    });
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('HTTP mode (per-request Bearer via AsyncLocalStorage)', () => {
@@ -195,6 +284,13 @@ describe('HTTP mode (per-request Bearer via AsyncLocalStorage)', () => {
 
   it('requestWithAuth maps an upstream 401 to AuthRequiredError (no local refresh)', async () => {
     const fn = jest.fn().mockRejectedValue(new HttpError(401, 'Unauthorized'));
+    await expect(
+      runWithHttpAuth({ accessToken: 'http-tok' }, () => requestWithAuth(fn)),
+    ).rejects.toMatchObject({
+      name: 'AuthRequiredError',
+      // HTTP 経路は再送しない = 書き込みは起きていないので確定した失敗
+      retryAttempted: false,
+    });
     await expect(
       runWithHttpAuth({ accessToken: 'http-tok' }, () => requestWithAuth(fn)),
     ).rejects.toBeInstanceOf(AuthRequiredError);

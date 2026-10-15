@@ -1,5 +1,7 @@
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { contentDtoSchema, createMcpServer } from './server';
+import { adminAuthorizationOptions } from './integration/helpers/createTestClient';
+import { SERVER_INSTRUCTIONS } from './instructions';
 import {
   TEMPLATE_LIST_WIDGET_URI,
   WIDGET_MIME_TYPE,
@@ -19,6 +21,7 @@ jest.mock('./client', () => ({
   generatePdfsAsync: jest.fn(),
   downloadFile: jest.fn(),
   downloadZip: jest.fn(),
+  getGenerationStatus: jest.fn(),
 }));
 jest.mock('./roots/index', () => ({
   resolveDefaultOutputDir: jest.fn(),
@@ -51,7 +54,11 @@ describe('Tool annotations (WS2c)', () => {
     mode: 'stdio' | 'http' = 'stdio',
     enableWidgets = false,
   ) => {
-    const server = createMcpServer({ mode, enableWidgets });
+    const server = createMcpServer({
+      mode,
+      enableWidgets,
+      ...adminAuthorizationOptions(),
+    });
     const client = new Client({ name: 'test-client', version: '0.0.0' });
     const [clientTransport, serverTransport] =
       InMemoryTransport.createLinkedPair();
@@ -135,7 +142,8 @@ describe('Tool annotations (WS2c)', () => {
 
     it('download_file: readOnlyHint=false (writes to disk), idempotentHint=true', () => {
       const tool = findTool(tools, 'download_file');
-      expect(tool.annotations?.title).toBe('Download Generated File');
+      // 仕様変更（情報設計 用語統一 2026-09）
+      expect(tool.annotations?.title).toBe('Download Generated PDF');
       expect(tool.annotations?.readOnlyHint).toBe(false);
       expect(tool.annotations?.destructiveHint).toBe(false);
       expect(tool.annotations?.idempotentHint).toBe(true);
@@ -147,6 +155,15 @@ describe('Tool annotations (WS2c)', () => {
       expect(tool.annotations?.readOnlyHint).toBe(false);
       expect(tool.annotations?.destructiveHint).toBe(false);
       expect(tool.annotations?.idempotentHint).toBe(true);
+    });
+
+    it('get_generation_status: readOnlyHint=true, idempotentHint=true (PRJ-3-2018)', () => {
+      const tool = findTool(tools, 'get_generation_status');
+      expect(tool.annotations?.title).toBe('Get PDF Generation Status');
+      expect(tool.annotations?.readOnlyHint).toBe(true);
+      expect(tool.annotations?.destructiveHint).toBe(false);
+      expect(tool.annotations?.idempotentHint).toBe(true);
+      expect(tool.annotations?.openWorldHint).toBe(false);
     });
 
     it('suggest_params: readOnlyHint=true', () => {
@@ -193,7 +210,9 @@ describe('Tool annotations (WS2c)', () => {
 
     it('copy_gallery_template: readOnlyHint=false, destructiveHint=false, idempotentHint=false (PRJ-3-1238)', () => {
       const tool = findTool(tools, 'copy_gallery_template');
-      expect(tool.annotations?.title).toBe('Copy Gallery Template to Workspace');
+      expect(tool.annotations?.title).toBe(
+        'Copy Gallery Template to Workspace',
+      );
       expect(tool.annotations?.readOnlyHint).toBe(false);
       expect(tool.annotations?.destructiveHint).toBe(false);
       expect(tool.annotations?.idempotentHint).toBe(false);
@@ -258,6 +277,12 @@ describe('Tool annotations (WS2c)', () => {
       expect(tool.annotations?.readOnlyHint).toBe(true);
     });
 
+    // generate_pdfs_async が http でも登録されるので、その状態確認も両モードに置く。
+    it('get_generation_status は http モードでも登録される (PRJ-3-2018)', () => {
+      const tool = findTool(tools, 'get_generation_status');
+      expect(tool.annotations?.readOnlyHint).toBe(true);
+    });
+
     it('search / fetch は http モードでも登録される (ChatGPT Apps 経路)', () => {
       expect(tools.find((t) => t.name === 'search')).toBeDefined();
       expect(tools.find((t) => t.name === 'fetch')).toBeDefined();
@@ -284,6 +309,76 @@ describe('Tool annotations (WS2c)', () => {
   });
 });
 
+// ─── initialize instructions (PRJ-3-1373) ──────────────────────────────────
+// 接続直後にクライアント AI 側から初回生成を提案させるための指示文。
+// ここで通るのは旧仕様 (initialize) 経路: InMemoryTransport への直 connect は
+// 2025-11-25 でネゴシエートされる (実測)。2026-07-28 の server/discover 応答に
+// 載ることは http-server-modern.spec.ts が実 HTTP 経路で別に固定する。
+describe('McpServer instructions (PRJ-3-1373)', () => {
+  const getInstructions = async (mode: 'stdio' | 'http') => {
+    const server = createMcpServer({ mode, ...adminAuthorizationOptions() });
+    const client = new Client({ name: 'test-client', version: '0.0.0' });
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    await Promise.all([
+      server.connect(serverTransport),
+      client.connect(clientTransport),
+    ]);
+    const instructions = client.getInstructions();
+    await client.close();
+    return instructions;
+  };
+
+  it.each(['stdio', 'http'] as const)(
+    '%s モード: 確定文案がそのまま instructions として返る',
+    async (mode) => {
+      expect(await getInstructions(mode)).toBe(SERVER_INSTRUCTIONS);
+    },
+  );
+
+  it('文案に初回導線の 5 ツールが導線順で含まれる', () => {
+    // 文面を書き換えても導線そのものが壊れていないことを見る
+    // (ツール名のタイポ・順序入れ替えはクライアント AI の初回行動を直接壊す)。
+    // 先頭が list_templates であることが特に重要: ギャラリー複製から始めると、
+    // 既にテンプレを持つワークスペースで重複デザインを作る (PR #120 の指摘)。
+    const flow = [
+      'list_templates',
+      'search_gallery_templates',
+      'copy_gallery_template',
+      'get_design_parameters',
+      'generate_pdf_sync',
+    ];
+    for (const name of flow) {
+      expect(SERVER_INSTRUCTIONS).toContain(name);
+    }
+    const positions = flow.map((name) => SERVER_INSTRUCTIONS.indexOf(name));
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+  });
+
+  it('plan ブロックの伝達を求めつつ、失敗時のエラー本文まで黙らせない', () => {
+    // 上限到達の生成は失敗して catch 節から返るため `plan` が付かない
+    // = 導線が最も要る瞬間に必ず不在になる (PR #123 のレビュー指摘)。
+    // 「無ければ黙れ」と書くと、サーバーが返したアップグレード案内まで
+    // 握りつぶさせることになる。禁じるのは自前の推測だけ。
+    expect(SERVER_INSTRUCTIONS).toContain('"plan" block');
+    expect(SERVER_INSTRUCTIONS).toContain('Never invent plan or usage figures');
+    expect(SERVER_INSTRUCTIONS).toContain('relay that error text');
+    // 単位の取り違え (ページ数を「件数」と読む) を防ぐ 1 文
+    // 仕様変更（情報設計 用語統一 2026-09）
+    expect(SERVER_INSTRUCTIONS).toContain('output pages, not PDFs');
+  });
+
+  it('テンプレ 0 件 (list_templates が空) の扱いに触れている', () => {
+    // 新規ワークスペースはデザイン 0 件で始まる (reposts-api WorkspaceUsecase.create が
+    // 採番するのは ApplicationToken のみ)。ここで会話が止まると初回生成に到達しない。
+    // 仕様変更（情報設計 用語統一 2026-09）
+    expect(SERVER_INSTRUCTIONS).toContain('no templates');
+    expect(SERVER_INSTRUCTIONS).toContain(
+      'Never end the conversation at an empty template list',
+    );
+  });
+});
+
 // ─── Apps SDK widget (Phase 2 / PR-2) ──────────────────────────────────────
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { listDesigns } = require('./client') as {
@@ -298,7 +393,11 @@ describe('Apps SDK widget wiring (PR-2)', () => {
   });
 
   const connect = async (mode: 'stdio' | 'http', enableWidgets = false) => {
-    const server = createMcpServer({ mode, enableWidgets });
+    const server = createMcpServer({
+      mode,
+      enableWidgets,
+      ...adminAuthorizationOptions(),
+    });
     const client = new Client({ name: 'test-client', version: '0.0.0' });
     const [clientTransport, serverTransport] =
       InMemoryTransport.createLinkedPair();

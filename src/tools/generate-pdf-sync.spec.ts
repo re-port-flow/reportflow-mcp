@@ -1,14 +1,23 @@
 import * as fileHelper from '../file-helper';
+import { getAuthWorkspaceId } from '../auth';
 import { handleGeneratePdfSync } from './generate-pdf-sync';
 
 jest.mock('../auth', () => ({
   requestWithAuth: jest.fn((fn: (h: Record<string, string>) => unknown) =>
     fn({ Authorization: 'Bearer test-token' }),
   ),
+  // 使用量取得 (workspace-usage.ts) は requestWithAuth を通さず直接ヘッダーを取る
+  getAuthHeaders: jest
+    .fn()
+    .mockResolvedValue({ Authorization: 'Bearer test-token' }),
+  getAuthWorkspaceId: jest.fn(),
 }));
 jest.mock('../file-helper');
 
 const mockedFileHelper = fileHelper as jest.Mocked<typeof fileHelper>;
+const mockedGetAuthWorkspaceId = getAuthWorkspaceId as jest.MockedFunction<
+  typeof getAuthWorkspaceId
+>;
 const mockFetch = jest.fn();
 global.fetch = mockFetch;
 
@@ -21,8 +30,9 @@ const PDF_ARRAY_BUFFER: ArrayBuffer = PDF_PAYLOAD.buffer.slice(
   PDF_PAYLOAD.byteOffset + PDF_PAYLOAD.byteLength,
 );
 
+// File-URL は Web アプリの出力履歴画面 (直接ダウンロード URL ではない)
 const DEFAULT_FILE_URL =
-  'https://api.re-port-flow.com/v1/file/download/req-uuid-1';
+  'https://re-port-flow.com/ws-1/templates/design-uuid-1/outputs?requestId=req-uuid-1';
 const DEFAULT_REQUEST_ID = 'req-uuid-1';
 const DEFAULT_FILE_MAPPING = encodeURIComponent(
   JSON.stringify([{ fileId: 'file-uuid-1', fileName: 'invoice.pdf' }]),
@@ -47,10 +57,42 @@ function mockBinaryResponse(
   });
 }
 
+/**
+ * 生成 (binary) → 使用量 (JSON) の 2 リクエストを順に返す。
+ * 使用量側の挙動 (成功 / 失敗) を差し替えて「生成を壊さない」ことを検証する。
+ */
+function mockGenerateThenUsage(usage: { ok: true; body: unknown } | Error) {
+  mockFetch.mockReset();
+  mockFetch.mockResolvedValueOnce({
+    ok: true,
+    status: 200,
+    statusText: 'OK',
+    json: () => Promise.resolve({}),
+    arrayBuffer: () => Promise.resolve(PDF_ARRAY_BUFFER),
+    headers: new Headers({
+      'File-URL': DEFAULT_FILE_URL,
+      'Request-Id': DEFAULT_REQUEST_ID,
+      'X-File-Mapping': DEFAULT_FILE_MAPPING,
+    }),
+  });
+  if (usage instanceof Error) {
+    mockFetch.mockRejectedValueOnce(usage);
+  } else {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: () => Promise.resolve(usage.body),
+    });
+  }
+}
+
 describe('handleGeneratePdfSync', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockedFileHelper.saveTempFile.mockResolvedValue('/tmp/invoice.pdf');
+    // 既定は「ワークスペース未解決」= plan ブロック無し。plan を見るテストで上書きする。
+    mockedGetAuthWorkspaceId.mockResolvedValue(undefined);
   });
 
   const input = {
@@ -101,7 +143,8 @@ describe('handleGeneratePdfSync', () => {
       const text = findText(result.content as ContentItem[]);
       expect(text).toBeDefined();
       const { summary, data } = parseTextContent(text!.text);
-      expect(summary).toContain('PDF生成完了');
+      // 仕様変更（情報設計 用語統一 2026-09）
+      expect(summary).toContain('PDF出力完了');
       expect(summary).toContain('/tmp/invoice.pdf');
       expect(summary).toContain(DEFAULT_FILE_URL);
       expect(data.filePath).toBe('/tmp/invoice.pdf');
@@ -200,7 +243,8 @@ describe('handleGeneratePdfSync', () => {
       const text = findText(result.content as ContentItem[]);
       expect(text).toBeDefined();
       const { summary, data } = parseTextContent(text!.text);
-      expect(summary).toContain('PDF生成完了');
+      // 仕様変更（情報設計 用語統一 2026-09）
+      expect(summary).toContain('PDF出力完了');
       expect(summary).toContain(DEFAULT_FILE_URL);
       expect(data.filePath).toBeUndefined();
       expect(data.fileUrl).toBe(DEFAULT_FILE_URL);
@@ -246,7 +290,8 @@ describe('handleGeneratePdfSync', () => {
       expect(result.isError).toBeUndefined();
       const text = findText(result.content as ContentItem[]);
       expect(text).toBeDefined();
-      expect(text!.text).toContain('PDF生成完了');
+      // 仕様変更（情報設計 用語統一 2026-09）
+      expect(text!.text).toContain('PDF出力完了');
     });
 
     it('outputDir が入力にあっても無視する', async () => {
@@ -262,6 +307,167 @@ describe('handleGeneratePdfSync', () => {
     });
   });
 
+  describe('plan / 使用量 (PRJ-3-1375)', () => {
+    it('無料プランなら plan ブロックとアップグレード URL を JSON に足す', async () => {
+      mockedGetAuthWorkspaceId.mockResolvedValue('ws-1');
+      mockGenerateThenUsage({
+        ok: true,
+        body: {
+          used: 8,
+          limit: 10,
+          remaining: 2,
+          percentage: 80,
+          planName: 'FREE',
+          planType: '01',
+        },
+      });
+
+      const result = await handleGeneratePdfSync(input);
+
+      expect(result.isError).toBeUndefined();
+      const { data } = parseTextContent(
+        findText(result.content as ContentItem[])!.text,
+      );
+      // 生成結果は従来どおり
+      expect(data.filePath).toBe('/tmp/invoice.pdf');
+      expect(data.plan).toMatchObject({
+        planName: 'FREE',
+        monthlyUsedPages: 8,
+        monthlyLimitPages: 10,
+        upgradeUrl: 'http://localhost:3000/ws-1/plan',
+      });
+    });
+
+    it('同期ツールは「今回ぶん未計上」の断りを付けない (記録後に問い合わせるため)', async () => {
+      // content-service の sync は _postFileGeneration を await してから応答する
+      mockedGetAuthWorkspaceId.mockResolvedValue('ws-1');
+      mockGenerateThenUsage({
+        ok: true,
+        body: {
+          used: 8,
+          limit: 10,
+          remaining: 2,
+          percentage: 80,
+          planName: 'FREE',
+          planType: '01',
+        },
+      });
+
+      const result = await handleGeneratePdfSync(input);
+
+      const { data } = parseTextContent(
+        findText(result.content as ContentItem[])!.text,
+      );
+      const plan = data.plan as Record<string, unknown>;
+      expect(plan.excludesPendingJob).toBeUndefined();
+      expect(plan.message as string).not.toContain('まだ含まれていません');
+    });
+
+    it('有料プランには URL を出さず使用量の事実だけを足す', async () => {
+      mockedGetAuthWorkspaceId.mockResolvedValue('ws-1');
+      mockGenerateThenUsage({
+        ok: true,
+        body: {
+          used: 120,
+          limit: 1000,
+          remaining: 880,
+          percentage: 12,
+          planName: 'STANDARD',
+          planType: '02',
+        },
+      });
+
+      const result = await handleGeneratePdfSync(input);
+
+      const { data } = parseTextContent(
+        findText(result.content as ContentItem[])!.text,
+      );
+      const plan = data.plan as Record<string, unknown>;
+      expect(plan.upgradeUrl).toBeUndefined();
+      expect(plan.monthlyUsedPages).toBe(120);
+    });
+
+    it('無制限プラン (limit=null) では上限を書かない', async () => {
+      mockedGetAuthWorkspaceId.mockResolvedValue('ws-1');
+      mockGenerateThenUsage({
+        ok: true,
+        body: {
+          used: 300,
+          limit: null,
+          remaining: null,
+          percentage: 0,
+          planName: 'PREMIUM',
+          planType: '03',
+        },
+      });
+
+      const result = await handleGeneratePdfSync(input);
+
+      const { data } = parseTextContent(
+        findText(result.content as ContentItem[])!.text,
+      );
+      const plan = data.plan as Record<string, unknown>;
+      expect(plan.monthlyLimitPages).toBeUndefined();
+      expect(plan.message as string).not.toMatch(/上限 \d/);
+    });
+
+    it('使用量取得が失敗しても PDF 生成の結果は必ず返す (plan は省く)', async () => {
+      mockedGetAuthWorkspaceId.mockResolvedValue('ws-1');
+      mockGenerateThenUsage(new Error('Request timed out after 5000ms'));
+
+      const result = await handleGeneratePdfSync(input);
+
+      expect(result.isError).toBeUndefined();
+      const { summary, data } = parseTextContent(
+        findText(result.content as ContentItem[])!.text,
+      );
+      // 仕様変更（情報設計 用語統一 2026-09）
+      expect(summary).toContain('PDF出力完了');
+      expect(data.filePath).toBe('/tmp/invoice.pdf');
+      expect(data.fileUrl).toBe(DEFAULT_FILE_URL);
+      expect(data.plan).toBeUndefined();
+    });
+
+    it('使用量が HTTP エラーでも PDF 生成の結果は返す', async () => {
+      mockedGetAuthWorkspaceId.mockResolvedValue('ws-1');
+      mockFetch.mockReset();
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve({}),
+        arrayBuffer: () => Promise.resolve(PDF_ARRAY_BUFFER),
+        headers: new Headers({ 'File-URL': DEFAULT_FILE_URL }),
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 403,
+        statusText: 'Forbidden',
+        json: () => Promise.resolve({ message: 'insufficient scope' }),
+      });
+
+      const result = await handleGeneratePdfSync(input);
+
+      expect(result.isError).toBeUndefined();
+      const { data } = parseTextContent(
+        findText(result.content as ContentItem[])!.text,
+      );
+      expect(data.fileUrl).toBe(DEFAULT_FILE_URL);
+      expect(data.plan).toBeUndefined();
+    });
+
+    it('生成が失敗したときは使用量を問い合わせない', async () => {
+      mockedGetAuthWorkspaceId.mockResolvedValue('ws-1');
+      mockFetch.mockReset();
+      mockFetch.mockRejectedValue(new Error('Server Error'));
+
+      const result = await handleGeneratePdfSync(input);
+
+      expect(result.isError).toBe(true);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('エラー系', () => {
     it('API エラー時に isError=true で対処方法を含むテキスト', async () => {
       mockFetch.mockRejectedValue(new Error('Server Error'));
@@ -270,10 +476,47 @@ describe('handleGeneratePdfSync', () => {
 
       expect(result.isError).toBe(true);
       const text = findText(result.content as ContentItem[]);
-      expect(text!.text).toContain('PDF生成に失敗しました');
+      // 仕様変更（情報設計 用語統一 2026-09）
+      expect(text!.text).toContain('PDFの出力に失敗しました');
       expect(text!.text).toContain('Server Error');
       // 対処ヒントが含まれる
       expect(text!.text).toContain('対処');
+    });
+
+    // PRJ-3-2016: 時間切れは入力の誤りではない。照合を促すと LLM は入力を直すか
+    // 同じ呼び出しを繰り返し、ページを二重に消費しうる。
+    it('504 (60 秒の時間切れ) では入力の照合ではなく async への切り替えを案内する', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 504,
+        statusText: 'Gateway Timeout',
+        json: () => Promise.reject(new Error('not json')),
+      });
+
+      const result = await handleGeneratePdfSync(input);
+
+      expect(result.isError).toBe(true);
+      const text = findText(result.content as ContentItem[])!.text;
+      expect(text).toContain('PDFの出力に失敗しました');
+      expect(text).toContain('[504]');
+      expect(text).toContain('タイムアウト');
+      expect(text).toContain('generate_pdfs_async');
+      expect(text).not.toContain('照合');
+    });
+
+    it('504 以外の API エラーは従来どおり入力の照合を案内する', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        json: () => Promise.reject(new Error('not json')),
+      });
+
+      const result = await handleGeneratePdfSync(input);
+
+      const text = findText(result.content as ContentItem[])!.text;
+      expect(text).toContain('照合');
+      expect(text).not.toContain('generate_pdfs_async');
     });
   });
 });

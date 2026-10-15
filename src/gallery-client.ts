@@ -1,22 +1,14 @@
 import { fetchJson, HttpError } from './http.js';
 import { requestWithAuth } from './auth.js';
-import { REPORTFLOW_OAUTH_ISSUER_URL } from './config.js';
+import { getMainApiBaseUrl } from './config.js';
 
 // ─── Base URL ─────────────────────────────────────────────────────────────────
 //
-// 公開ギャラリー API とテンプレート複製 API は reposts-api 側にあり、OAuth
-// Authorization Server と同じホスト + パスプレフィックス
-// (https://{stg.}re-port-flow.com/api/v1) で配信される。content-service
-// (REPORTFLOW_API_BASE_URL) とはホストが異なるため、auth.ts と同じ
-// REPORTFLOW_AUTH_URL env override に従わせる (stdio でステージングへ向けた
-// 場合にトークン発行元と API 呼び出し先が食い違わないようにする)。
-// 末尾スラッシュは除去する (auth.ts はスラッシュ付き設定も許容するため、
-// そのまま連結すると /api/v1//public/... の二重スラッシュになる)。
-export const getMainApiBaseUrl = (): string =>
-  (process.env['REPORTFLOW_AUTH_URL'] ?? REPORTFLOW_OAUTH_ISSUER_URL).replace(
-    /\/+$/,
-    '',
-  );
+// 定義は `config.ts` にある (PRJ-3-1580 で移動)。`http.ts` が送信直前に
+// 「要求先が Cloudflare Access 境界のホストか」を判定するのに同じ値を使うので、
+// `http.ts` を import している当ファイルに置いたままだと循環になる。
+// 既存の import 元 (`workspace-usage.ts` / 各 spec) を壊さないよう再 export する。
+export { getMainApiBaseUrl };
 
 // ─── app-key ヘッダー ─────────────────────────────────────────────────────────
 //

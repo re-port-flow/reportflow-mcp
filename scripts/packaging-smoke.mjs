@@ -27,18 +27,41 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const ROOT_DIR = resolve(import.meta.dirname, '..');
-// stdio モードの期待ツール数 (search / fetch は ChatGPT Apps 規約ツールとして両モードに登録)
-// +2 = ギャラリー参照ツール (search_gallery_templates / get_gallery_template, PRJ-3-1237)。
-// +1 = ギャラリー複製ツール (copy_gallery_template, PRJ-3-1238)。
-const EXPECTED_TOOL_COUNT = 15;
+
+// ワークスペース権限によるツール一覧の出し分け (PRJ-3-1584 / ST-3) が入っているか。
+//
+// この検査は tarball を **トークン無し** で起動する。role-aware 版では未認証
+// (ロール解決不能) は「公開ギャラリー 2 種 + authenticate」だけを返すのが正しい
+// 挙動なので、期待値は 15 ではなく 3 になる。
+//
+// 判定を src/workspace-permission.ts の実在で行うのは INSTRUCTIONS_REQUIRED と
+// 同じ理由 —— この 1 ファイルは PRIVATE (monepla/report-mcp) と PUBLIC
+// (re-port-flow/reportflow-mcp) に同一内容で置かれ、PUBLIC には role-aware 版が
+// まだ同期されていない。無条件に 3 へ変えると PUBLIC で必ず落ち、15 のままだと
+// PRIVATE で必ず落ちる。実装の有無で自動的に切り替える。
+const ROLE_AWARE_SOURCE = join(ROOT_DIR, 'src', 'workspace-permission.ts');
+const ROLE_AWARE = existsSync(ROLE_AWARE_SOURCE);
+
+// stdio モードの期待ツール数。
+// role-aware 版 (未認証): authenticate + 公開ギャラリー 2 種 = 3。
+// legacy 版: search / fetch (ChatGPT Apps 規約) + ギャラリー参照 2 種 (PRJ-3-1237)
+//            + ギャラリー複製 (PRJ-3-1238) を含めた 15。
+const EXPECTED_TOOL_COUNT = ROLE_AWARE ? 3 : 15;
 // 件数だけの検証では、ツールが入れ替わった / 改名された配布物を検出できない。
 // 実 stdio プロセスで「この名前で公開されていること」まで確認する
 // (npm 公開版にギャラリーツールが含まれない配布事故を検出するため)。
-const REQUIRED_TOOL_NAMES = [
-  'search_gallery_templates',
-  'get_gallery_template',
-  'copy_gallery_template',
-];
+//
+// role-aware 版では copy_gallery_template は WRITE 以上でのみ現れるので、
+// 未認証起動のこの検査では必須名から外す (代わりに「未認証では**出ない**こと」を
+// 下の FORBIDDEN_TOOL_NAMES で確認する。単に消して通すのではない)。
+const REQUIRED_TOOL_NAMES = ROLE_AWARE
+  ? ['search_gallery_templates', 'get_gallery_template', 'authenticate']
+  : ['search_gallery_templates', 'get_gallery_template', 'copy_gallery_template'];
+// 未認証の配布物に現れてはいけないツール (role-aware 版のみ)。
+// 権限フィルタがビルド・梱包の経路で落ちたことを検出する。
+const FORBIDDEN_TOOL_NAMES = ROLE_AWARE
+  ? ['copy_gallery_template', 'list_templates', 'generate_pdf_sync']
+  : [];
 
 // initialize.instructions (PRJ-3-1373) を必須にするかは、リポジトリに実装があるかで決める。
 //
@@ -248,6 +271,22 @@ try {
           return;
         }
         ok(`required tools present: ${REQUIRED_TOOL_NAMES.join(', ')}`);
+        // 権限フィルタが梱包経路で落ちていないか (未認証で workspace 系が出ないこと)。
+        const leaked = FORBIDDEN_TOOL_NAMES.filter((n) => names.includes(n));
+        if (leaked.length > 0) {
+          cleanup();
+          reject(
+            new Error(
+              `Workspace-scoped tools exposed without authentication: ${leaked.join(', ')}`,
+            ),
+          );
+          return;
+        }
+        if (FORBIDDEN_TOOL_NAMES.length > 0) {
+          ok(`workspace-scoped tools hidden while unauthenticated: ${FORBIDDEN_TOOL_NAMES.join(', ')}`);
+        } else {
+          skip('workspace role filtering — src/workspace-permission.ts が無いので検査対象外');
+        }
         cleanup();
         resolve(undefined);
       }

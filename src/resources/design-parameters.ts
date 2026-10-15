@@ -3,6 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/server';
 import { getDesignParameters, listDesigns } from '../client.js';
 import { AuthRequiredError } from '../auth.js';
 import type { ResourceReadResult } from './designs.js';
+import type { CapabilityToggle } from '../workspace-permission.js';
 
 export const DESIGN_PARAMETERS_URI_TEMPLATE =
   'reportflow://designs/{designId}/parameters';
@@ -44,16 +45,18 @@ export const listDesignParameterResources = async () => {
   };
 };
 
-export const registerDesignParametersResource = (server: McpServer): void => {
-  server.registerResource(
+export const registerDesignParametersResource = (
+  server: McpServer,
+): CapabilityToggle => {
+  return server.registerResource(
     'design-parameters',
     new ResourceTemplate(DESIGN_PARAMETERS_URI_TEMPLATE, {
       list: listDesignParameterResources,
     }),
     {
-      title: 'デザインのパラメータスキーマ',
+      title: 'テンプレートのパラメータスキーマ',
       description:
-        '指定 designId の最新バージョンのパラメータ構造（get_design_parameters と同等内容。作成者が設定した場合は各フィールドの意味を表す description を含む）を Resource として公開。',
+        '指定 designId（テンプレートのID）の最新バージョンのパラメータ構造（get_design_parameters と同等内容。作成者が設定した場合は各フィールドの意味を表す description を含む）を Resource として公開。',
       mimeType: 'application/json',
     },
     readDesignParameters,

@@ -65,4 +65,51 @@ describe('handleDownloadZip', () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('エラー: Not Found');
   });
+
+  // ─── 生成状態ごとの返し分け (PRJ-3-2018) ──────────────────────────────────
+  const errorRes = (status: number, body: unknown) => ({
+    ok: false,
+    status,
+    statusText: 'Error',
+    json: () => Promise.resolve(body),
+    headers: new Headers(),
+  });
+
+  it('409 FILE_NOT_READY: 生成中として download_zip の再呼び出しを促す', async () => {
+    mockFetch.mockResolvedValue(
+      errorRes(409, {
+        code: 'FILE_NOT_READY',
+        message: 'File is still being generated.',
+        retryAfter: 2,
+      }),
+    );
+    const result = await handleDownloadZip({ requestId: 'r' });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('download_zip');
+    expect(result.content[0].text).toContain('2 秒後に');
+  });
+
+  it('422 FILE_GENERATION_FAILED: isError で生成失敗を返す', async () => {
+    mockFetch.mockResolvedValue(
+      errorRes(422, { code: 'FILE_GENERATION_FAILED', message: 'failed' }),
+    );
+    const result = await handleDownloadZip({ requestId: 'r' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('FILE_GENERATION_FAILED');
+  });
+
+  it('404: requestId の確認を促す (fileId には触れない)', async () => {
+    mockFetch.mockResolvedValue(errorRes(404, { message: 'nf' }));
+    const result = await handleDownloadZip({ requestId: 'r' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('requestId が生成ツール');
+    expect(result.content[0].text).not.toContain('fileId');
+  });
+
+  it('Error 以外の reject もそのまま文言にする', async () => {
+    mockFetch.mockRejectedValue('socket hang up');
+    const result = await handleDownloadZip({ requestId: 'r' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe('エラー: socket hang up');
+  });
 });

@@ -4,6 +4,8 @@
 // TODO(PRJ-3-379): replace the locally-defined types with imports from
 // @monepla/report-flow-core/telemetry once that subpath is published.
 
+import { discardBody } from '../discard-body.js';
+
 export const TELEMETRY_SECRET_HEADER = 'X-Telemetry-Secret';
 export const TELEMETRY_DEFAULT_TIMEOUT_MS = 2000;
 
@@ -82,6 +84,16 @@ class HttpTelemetryClient implements TelemetryClient {
         body: JSON.stringify(event),
         signal: controller.signal,
       });
+      // The collector's response body is never used — only `res.ok` is. An
+      // unread body keeps the connection held until GC, and telemetry fires on
+      // every tool call, so the leak accumulates (PRJ-3-1582).
+      //
+      // Released *before* the status check so a throwing `logger` cannot leave
+      // the stream held. `discardBody` swallows cancel failures, which keeps a
+      // successful send from being reported as `send failed` by the catch
+      // below — the fire-and-forget contract is that only the *send* decides
+      // the warning.
+      await discardBody(res);
       if (!res.ok) {
         this.logger.warn(
           `[telemetry] non-success response: status=${res.status} event=${event.event}`,

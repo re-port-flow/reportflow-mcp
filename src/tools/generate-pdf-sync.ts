@@ -1,9 +1,17 @@
 import { generatePdfSync, ContentDto } from '../client.js';
+import {
+  attachPlanNotice,
+  type PlanNoticeResolver,
+} from '../workspace-usage.js';
+import {
+  isSyncGenerationTimeout,
+  SYNC_TIMEOUT_GUIDANCE,
+} from './sync-timeout.js';
 
 export const generatePdfSyncTool = {
   name: 'generate_pdf_sync',
   description:
-    'デザインIDとパラメータを指定してPDFを生成します。応答にダウンロード URL が含まれるため、本ツール 1 回の呼び出しで結果提示が完結します (別途ダウンロード用ツールを呼ぶ必要はありません)。\n- stdio モード (Claude Desktop / Code): ローカルに保存し絶対パスも返します。outputDir で保存先を指定できます (未指定時はクライアントのワークスペース Roots または OS 一時ディレクトリ)。\n- HTTP モード (claude.ai / n8n 等): サーバー側には保存せず、ダウンロード URL (fileUrl) と requestId / fileId を返します。\n\n【重要】呼び出し前に必ず get_design_parameters でデザインの必要パラメータ構造を確認し、ユーザーから必要な値を聞き出すこと。プレースホルダー値・架空の値を勝手に生成しないこと。\n\n【passthrough のプライバシー注意】content.passthrough のトップレベルの文字列/数値の値は生成 PDF の XMP メタデータに埋め込まれ、PDF 受領者や OS のファイル検索 (Spotlight / Windows Search) から閲覧可能になるため、個人情報・機微情報を入れないこと。',
+    'designId（テンプレートのID）とパラメータを指定してPDFを出力します。本ツール 1 回の呼び出しで結果提示が完結します (別途ダウンロード用ツールを呼ぶ必要はありません)。生成が 60 秒を超えると API がタイムアウト (504) し、PDF を受け取れません (サーバー側では生成が続き、ページが消費されることがあります)。60 秒を超えうる生成は generate_pdfs_async を使うこと。\n- stdio モード (Claude Desktop / Code): ローカルに保存し絶対パスも返します。outputDir で保存先を指定できます (未指定時はクライアントのワークスペース Roots または OS 一時ディレクトリ)。\n- HTTP モード (claude.ai / n8n 等): サーバー側には保存せず、fileUrl と requestId / fileId を返します。fileUrl は Re:port Flow Web アプリの出力履歴画面の URL で、ファイルを直接ダウンロードする URL ではありません (Re:port Flow にログインして開く画面です)。\n\n【重要】呼び出し前に必ず get_design_parameters でテンプレートの必要パラメータ構造を確認し、ユーザーから必要な値を聞き出すこと。プレースホルダー値・架空の値を勝手に生成しないこと。\n\n【passthrough のプライバシー注意】content.passthrough のトップレベルの文字列/数値の値は出力した PDF の XMP メタデータに埋め込まれ、PDF 受領者や OS のファイル検索 (Spotlight / Windows Search) から閲覧可能になるため、個人情報・機微情報を入れないこと。',
 };
 
 export type GeneratePdfSyncInput = {
@@ -33,6 +41,11 @@ export type GeneratePdfSyncDeps = {
    * 使われる。テストや非 MCP 経路では未指定で OK。
    */
   resolveAllowedRoots?: () => Promise<string[]>;
+  /**
+   * 生成成功時に応答へ添えるプラン / 使用量ブロックの解決関数
+   * (既定: `workspace-usage.ts` の `resolvePlanNotice`)。テストからの差し替え用。
+   */
+  resolvePlanNotice?: PlanNoticeResolver;
 };
 
 type TextContent = { type: 'text'; text: string };
@@ -52,18 +65,19 @@ export type GeneratePdfSyncToolResult = {
 
 /**
  * 人間向け 1 行サマリを組み立てる。Claude (LLM) がそのままユーザーに提示できる
- * 形を目指す。stdio は保存先、HTTP は URL を提示。
+ * 形を目指す。stdio は保存先、HTTP は出力履歴画面の URL を提示。
  */
 const buildHumanSummary = (
   filePath: string | undefined,
   fileUrl: string | undefined,
 ): string => {
   if (filePath && fileUrl) {
-    return `PDF生成完了\n- 保存先: ${filePath}\n- ダウンロード: ${fileUrl}`;
+    return `PDF出力完了\n- 保存先: ${filePath}\n- 出力履歴 (Web アプリ。要ログイン): ${fileUrl}`;
   }
-  if (filePath) return `PDF生成完了\n- 保存先: ${filePath}`;
-  if (fileUrl) return `PDF生成完了\n- ダウンロード: ${fileUrl}`;
-  return 'PDF生成完了';
+  if (filePath) return `PDF出力完了\n- 保存先: ${filePath}`;
+  if (fileUrl)
+    return `PDF出力完了\n- 出力履歴 (Web アプリ。要ログイン): ${fileUrl}`;
+  return 'PDF出力完了';
 };
 
 export const handleGeneratePdfSync = async (
@@ -100,20 +114,26 @@ export const handleGeneratePdfSync = async (
     if (requestId) structured.requestId = requestId;
     if (fileId) structured.fileId = fileId;
 
+    // プラン / 使用量 (取得できたときだけ `plan` が生える。失敗は黙って省く)
+    const withPlan = await attachPlanNotice(structured, deps.resolvePlanNotice);
+
     const summary = buildHumanSummary(filePath, fileUrl);
     const text =
-      Object.keys(structured).length > 0
-        ? `${summary}\n\n${JSON.stringify(structured, null, 2)}`
+      Object.keys(withPlan).length > 0
+        ? `${summary}\n\n${JSON.stringify(withPlan, null, 2)}`
         : summary;
 
     return { content: [{ type: 'text', text }] };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const guidance = isSyncGenerationTimeout(err)
+      ? SYNC_TIMEOUT_GUIDANCE
+      : '対処: designId / version / params を get_design_parameters の出力と照合してください。認証エラーの場合は再認証が必要です。';
     return {
       content: [
         {
           type: 'text',
-          text: `PDF生成に失敗しました: ${message}\n対処: designId / version / params を get_design_parameters の出力と照合してください。認証エラーの場合は再認証が必要です。`,
+          text: `PDFの出力に失敗しました: ${message}\n${guidance}`,
         },
       ],
       isError: true,

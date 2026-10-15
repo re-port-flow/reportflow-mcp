@@ -78,6 +78,17 @@ Both transports (stdio / Streamable HTTP) serve two MCP protocol generations fro
 
 Version selection is automatic on both transports: modern clients probe with `server/discover`, legacy clients keep sending `initialize` — no configuration is required on either side, and existing connections keep working unchanged.
 
+Either handshake also returns MCP `instructions`: a short brief telling the connected AI what Re:port Flow does and how to reach a first PDF (gallery search → copy → parameters → generate), so it can offer to create a document right after you connect instead of waiting to be asked. How closely a client follows those instructions is up to that client.
+
+### A2A (Agent2Agent)
+
+The remote server also speaks [A2A](https://a2a-protocol.org) **v1.0** over the JSON-RPC binding:
+
+- Agent Card: `https://mcp.re-port-flow.com/.well-known/agent-card.json`
+- Endpoint: `POST https://mcp.re-port-flow.com/a2a` (`SendMessage`)
+
+Each A2A skill is one of the MCP tools above (the skill id is the tool name). Send a message with a data part `{"skill": "<tool name>", "arguments": {...}}`; the arguments follow that tool's input schema, and the call runs through the same authorization and workspace permissions as MCP. Authorize with the same OAuth flow (the MCP access token works as-is). Streaming, push notifications and task retrieval are not supported: every `SendMessage` returns a finished task.
+
 ## Authentication
 
 ### Remote (claude.ai)
@@ -107,7 +118,10 @@ Each example below is a prompt you can paste as-is; the AI picks the right tools
 
 The AI lists designs with `list_templates`, fetches the parameter schema with
 `get_design_parameters`, fills in the values, and calls `generate_pdf_sync`.
-- **Remote**: returns a download URL (`fileUrl`).
+- **Remote**: returns `fileUrl` — the output-history page of the Re:port Flow
+  web app (sign-in required). It is not a direct file download link.
+- Synchronous generation times out after 60 seconds (the API returns `504`);
+  use `generate_pdfs_async` for anything that may take longer.
 - **Local**: also saves the file and returns its absolute path.
 
 ### 2. Batch-generate many PDFs
@@ -117,16 +131,23 @@ The AI lists designs with `list_templates`, fetches the parameter schema with
 
 - **Local (stdio)**: `generate_pdfs_sync` writes a single ZIP to your workspace.
 - **Remote**: `generate_pdfs_async` runs the batch and returns a request id plus
-  a download URL.
+  the output-history page URL (`url`). `get_generation_status` tells you when
+  the batch has finished or failed.
 
 ### 3. Async generate, then download (local)
 
 > Kick off the contract PDF in the background, then download it once it's ready.
 
-The AI calls `generate_pdf_async` (returns a `requestId` immediately), then
-`download_file` to save the finished PDF. The batch equivalent is
-`generate_pdfs_async` → `download_zip`. These download tools are stdio-only; on
-the remote server the sync/async tools already return a `fileUrl`.
+The AI calls `generate_pdf_async` (returns a `requestId` immediately), checks
+progress with `get_generation_status`, then calls `download_file` to save the
+finished PDF. The batch equivalent is `generate_pdfs_async` → `download_zip`.
+If a download is attempted while the file is still being generated, the tool
+reports `FILE_NOT_READY` with the number of seconds to wait instead of failing.
+These download tools are stdio-only; on the remote server the sync/async tools
+return the output-history page URL instead.
+
+`requestId`, `fileId` and `designId` are short alphanumeric strings (for
+example `0eUDdgAjNXrrItA2`), not UUIDs.
 
 > **Tip — natural-language params:** on a Sampling-capable client you can ask
 > *"draft the params for a $1,000 invoice to A社"* and the AI will call
@@ -201,7 +222,8 @@ an `Authorization` header — see
 | `get_design_parameters` | Fetch the parameter schema for a design |
 | `generate_pdf_sync` / `_async` | Generate one PDF (sync returns path; async returns request ID) |
 | `generate_pdfs_sync` / `_async` | Generate many PDFs (returns a ZIP) |
-| `download_file` / `download_zip` | Download artifacts produced by async tools |
+| `get_generation_status` | Check an async request (`requestId`): `processing` / `completed` / `failed`, with the failure `code` and `message` |
+| `download_file` / `download_zip` | Download artifacts produced by async tools (stdio only). Returns `FILE_NOT_READY` + seconds to wait while the file is still being generated |
 | `suggest_params` | Translate a natural-language brief into a `params` JSON via MCP Sampling (requires a Sampling-capable client) |
 | `search` / `fetch` | ChatGPT connector convention tools (single string argument), **closed-world** (`openWorldHint: false`) — they only read your own workspace's internal template catalog, never the web. `search` resolves templates by name; `fetch` returns a template's parameter schema by id. Thin wrappers over `list_templates` / `get_design_parameters` so ChatGPT (incl. Plus/Pro without Developer Mode) can discover and inspect templates. |
 | `search_gallery_templates` | Search the **public template gallery** (no auth needed) by keyword/category. Returns candidate templates that are *not yet* in your workspace — their `slug` cannot be used for PDF generation until copied. |

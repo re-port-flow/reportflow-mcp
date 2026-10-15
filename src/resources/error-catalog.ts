@@ -1,5 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import type { ResourceReadResult } from './designs.js';
+import type { CapabilityToggle } from '../workspace-permission.js';
 
 export const ERROR_CATALOG_URI = 'reportflow://errors';
 
@@ -38,8 +39,10 @@ export const readErrorCatalog = (uri: URL): ResourceReadResult => ({
   ],
 });
 
-export const registerErrorCatalogResource = (server: McpServer): void => {
-  server.registerResource(
+export const registerErrorCatalogResource = (
+  server: McpServer,
+): CapabilityToggle => {
+  return server.registerResource(
     'errors',
     ERROR_CATALOG_URI,
     {

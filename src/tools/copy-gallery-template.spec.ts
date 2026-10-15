@@ -7,13 +7,18 @@ import {
 jest.mock('../auth', () => {
   class AuthRequiredError extends Error {
     readonly mode: 'stdio' | 'http';
+    // 本物と同じ 3 引数。第 3 引数が「書き込みを送った後の失敗か」で、
+    // これを持たないと全ての認証失敗が結果不明になる（PR #117 の Codex 指摘）
+    readonly retryAttempted: boolean;
     constructor(
       message = '再認証が必要です。',
       mode: 'stdio' | 'http' = 'stdio',
+      retryAttempted = false,
     ) {
       super(message);
       this.name = 'AuthRequiredError';
       this.mode = mode;
+      this.retryAttempted = retryAttempted;
     }
   }
   return {
@@ -31,7 +36,8 @@ const authMock = require('../auth') as {
   AuthRequiredError: new (
     message?: string,
     mode?: 'stdio' | 'http',
-  ) => Error & { mode: 'stdio' | 'http' };
+    retryAttempted?: boolean,
+  ) => Error & { mode: 'stdio' | 'http'; retryAttempted: boolean };
   getAuthWorkspaceId: jest.Mock;
   requestWithAuth: jest.Mock;
 };
@@ -389,7 +395,10 @@ describe('handleCopyGalleryTemplate', () => {
     const result = await handleCopyGalleryTemplate({ slug: 'invoice-basic' });
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('デザインは作成されませんでした');
+    // 仕様変更（情報設計 用語統一 2026-09）
+    expect(result.content[0].text).toContain(
+      'テンプレートは作成されませんでした',
+    );
     expect(result.content[0].text).toContain('スナップショットデータが欠損');
   });
 
@@ -402,5 +411,588 @@ describe('handleCopyGalleryTemplate', () => {
     expect(result.isError).toBeUndefined();
     const payload = JSON.parse(result.content[0].text) as { name: string };
     expect(payload.name).toBe('invoice-basic');
+  });
+
+  // ------------------------------------------------------------------------
+  // 複製需要テレメトリ (PRJ-3-1350)
+  // ------------------------------------------------------------------------
+  describe('複製需要テレメトリ', () => {
+    it('成功時: slug / success=true と複製 API が返した workspaceId を渡す', async () => {
+      mockJsonOnce(detailFixture);
+      mockJsonOnce(duplicationFixture, 201);
+      const onCopied = jest.fn();
+
+      await handleCopyGalleryTemplate({ slug: 'invoice-basic' }, { onCopied });
+
+      expect(onCopied).toHaveBeenCalledTimes(1);
+      expect(onCopied).toHaveBeenCalledWith({
+        slug: 'invoice-basic',
+        success: true,
+        // 未検証の JWT claim ではなくサーバーが確定させた複製先
+        workspaceId: duplicationFixture.workspaceId,
+      });
+    });
+
+    it('複製 API のエラーでも success=false で 1 回だけ送る', async () => {
+      mockJsonOnce(detailFixture);
+      mockJsonOnce({ message: 'not found' }, 404);
+      const onCopied = jest.fn();
+
+      const result = await handleCopyGalleryTemplate(
+        { slug: 'invoice-basic' },
+        { onCopied },
+      );
+
+      expect(result.isError).toBe(true);
+      expect(onCopied).toHaveBeenCalledTimes(1);
+      // 複製が成立していない呼び出しに帰属は付けない
+      expect(onCopied).toHaveBeenCalledWith({
+        slug: 'invoice-basic',
+        success: false,
+        slugVerified: true,
+      });
+    });
+
+    it('認証エラーのような早期 return でも取りこぼさない', async () => {
+      // 出口が 8 箇所あるため、ラッパーで 1 箇所に集約している回帰テスト
+      authMock.getAuthWorkspaceId.mockRejectedValueOnce(
+        new authMock.AuthRequiredError('認証が必要です。', 'stdio'),
+      );
+      const onCopied = jest.fn();
+
+      const result = await handleCopyGalleryTemplate(
+        { slug: 'invoice-basic' },
+        { onCopied },
+      );
+
+      expect(result.isError).toBe(true);
+      expect(onCopied).toHaveBeenCalledWith({
+        slug: 'invoice-basic',
+        success: false,
+      });
+    });
+
+    it('本体が rethrow したときも success=false を 1 件送り、例外はそのまま投げ直す', async () => {
+      // auth 層の非 AuthRequiredError は本体が rethrow する。ここで拾わないと
+      // その呼び出しだけイベントが欠落し、転換率の分母が静かに減る。
+      authMock.getAuthWorkspaceId.mockRejectedValueOnce(new Error('boom'));
+      const onCopied = jest.fn();
+
+      await expect(
+        handleCopyGalleryTemplate({ slug: 'invoice-basic' }, { onCopied }),
+      ).rejects.toThrow('boom');
+
+      expect(onCopied).toHaveBeenCalledTimes(1);
+      expect(onCopied).toHaveBeenCalledWith({
+        slug: 'invoice-basic',
+        success: false,
+      });
+    });
+
+    it('コールバックが throw しても複製結果を握りつぶさない', async () => {
+      mockJsonOnce(detailFixture);
+      mockJsonOnce(duplicationFixture, 201);
+
+      const result = await handleCopyGalleryTemplate(
+        { slug: 'invoice-basic' },
+        {
+          onCopied: () => {
+            throw new Error('telemetry down');
+          },
+        },
+      );
+
+      expect(result.isError).toBeUndefined();
+      const payload = JSON.parse(result.content[0].text) as {
+        designId: string;
+      };
+      expect(payload.designId).toBe(duplicationFixture.duplicatedFileId);
+    });
+
+    it('失敗経路でコールバックが throw してもエラー応答をそのまま返す', async () => {
+      // 成功経路と同じ保証を失敗経路にも掛ける（送信は 2 箇所に分かれているため）
+      mockJsonOnce(detailFixture);
+      mockJsonOnce({ message: 'not found' }, 404);
+
+      const result = await handleCopyGalleryTemplate(
+        { slug: 'invoice-basic' },
+        {
+          onCopied: () => {
+            throw new Error('telemetry down');
+          },
+        },
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('見つかりませんでした');
+    });
+
+    it('deps 省略時は従来どおり動く（既存呼び出しの互換）', async () => {
+      mockJsonOnce(detailFixture);
+      mockJsonOnce(duplicationFixture, 201);
+
+      const result = await handleCopyGalleryTemplate({ slug: 'invoice-basic' });
+
+      expect(result.isError).toBeUndefined();
+    });
+
+    // ----------------------------------------------------------------------
+    // 判定不能な複製 (outcomeUnknown)
+    // ----------------------------------------------------------------------
+    // サーバーが解釈できる応答を返さなかったとき、複製が完了したかは**こちら側
+    // では確定できない**。これを失敗として記録すると、実際には完了した複製が
+    // 「検索 → 複製の転換」の分子から消え、失敗件数だけが増える
+    // （PR #117 の Codex 指摘）。
+    describe('判定不能な複製は outcomeUnknown で残す', () => {
+      /** 複製 POST を `reject` させる（詳細取得は成功させる）。 */
+      const rejectDuplicationWith = (err: unknown): void => {
+        mockJsonOnce(detailFixture);
+        mockFetch.mockRejectedValueOnce(err);
+      };
+
+      const indeterminateCases: ReadonlyArray<{
+        readonly name: string;
+        readonly arrange: () => void;
+      }> = [
+        {
+          name: 'タイムアウト',
+          arrange: () =>
+            rejectDuplicationWith(
+              new Error('Request timed out after 120000ms'),
+            ),
+        },
+        {
+          name: '応答が JSON でない',
+          arrange: () => {
+            mockJsonOnce(detailFixture);
+            mockFetch.mockResolvedValueOnce({
+              ok: true,
+              status: 200,
+              statusText: 'OK',
+              json: () =>
+                Promise.reject(
+                  new SyntaxError(`Unexpected token '<', "<!DOC"...`),
+                ),
+            });
+          },
+        },
+        {
+          name: '接続自体の失敗（送信前の失敗と応答読み取り中の切断を区別できない）',
+          arrange: () => rejectDuplicationWith(new TypeError('fetch failed')),
+        },
+        {
+          // origin が commit の後に落ちる / プロキシが応答経路で 502・504 を返す
+          // 経路では、デザインが作られたまま 5xx が返る
+          name: '500（commit 後に落ちた可能性を排除できない）',
+          arrange: () => {
+            mockJsonOnce(detailFixture);
+            mockJsonOnce({ message: 'internal error' }, 500);
+          },
+        },
+        {
+          name: '502（応答経路のプロキシ由来。origin は書き込み済みかもしれない）',
+          arrange: () => {
+            mockJsonOnce(detailFixture);
+            mockJsonOnce({ message: 'bad gateway' }, 502);
+          },
+        },
+        {
+          name: '400（意味を判断していないステータスを「書き込み無し」と断定しない）',
+          arrange: () => {
+            mockJsonOnce(detailFixture);
+            mockJsonOnce({ message: 'bad request' }, 400);
+          },
+        },
+      ];
+
+      it('詳細応答が要求した slug を指していなければ slugVerified を立てない', async () => {
+        // fetchJson は実行時検証をしないので 2xx + {} でも通る。それを実在確認と
+        // 扱うと、AI が渡した任意の文字列がマスクを免除されて記録される
+        // （PR #117 の Codex 指摘）
+        mockJsonOnce({});
+        mockJsonOnce({ message: 'boom' }, 500);
+        const onCopied = jest.fn();
+
+        await handleCopyGalleryTemplate(
+          { slug: 'victim@example.com' },
+          { onCopied },
+        );
+
+        const observation = onCopied.mock.calls[0][0] as Record<
+          string,
+          unknown
+        >;
+        expect(observation['slugVerified']).toBeUndefined();
+      });
+
+      // 「確定か否か」の判断は http.ts の WRITE_REJECTED_STATUSES が唯一の根拠。
+      // 専用文言を持つ 403/404/412/429 のほかに 401 も集合に入っているので、
+      // ここが不明扱いに落ちないことを固定する（判断が auth.ts と食い違うため）
+      it('集合に含まれるが専用文言を持たない 401 も確定した失敗にする', async () => {
+        mockJsonOnce(detailFixture);
+        mockJsonOnce({ message: 'unauthorized' }, 401);
+        const onCopied = jest.fn();
+
+        const result = await handleCopyGalleryTemplate(
+          { slug: 'invoice-basic' },
+          { onCopied },
+        );
+
+        expect(result.content[0].text).toContain('複製は実行されていません');
+        expect(result.content[0].text).not.toContain('不明');
+        expect(onCopied.mock.calls[0][0]).not.toHaveProperty('outcomeUnknown');
+      });
+
+      it('要求した slug を反射するだけの応答では slugVerified を立てない', async () => {
+        // slug の一致だけを見ていると `{ slug: 入力値 }` が実在確認を通り、
+        // AI が渡した任意の文字列がマスクを免除される（PR #117 の Codex 指摘）
+        mockJsonOnce({ slug: 'victim@example.com' });
+        mockJsonOnce({ message: 'boom' }, 500);
+        const onCopied = jest.fn();
+
+        await handleCopyGalleryTemplate(
+          { slug: 'victim@example.com' },
+          { onCopied },
+        );
+
+        const observation = onCopied.mock.calls[0][0] as Record<
+          string,
+          unknown
+        >;
+        expect(observation['slugVerified']).toBeUndefined();
+      });
+
+      it('型が契約外のフィールドを含む詳細応答では slugVerified を立てない', async () => {
+        mockJsonOnce({ ...detailFixture, version: '2' });
+        mockJsonOnce({ message: 'boom' }, 500);
+        const onCopied = jest.fn();
+
+        await handleCopyGalleryTemplate(
+          { slug: 'invoice-basic' },
+          { onCopied },
+        );
+
+        const observation = onCopied.mock.calls[0][0] as Record<
+          string,
+          unknown
+        >;
+        expect(observation['slugVerified']).toBeUndefined();
+      });
+
+      // 検査対象を数個ずつ足していた頃は「まだ足りない」と指摘され続けたため、
+      // 契約の全フィールドを 1 つずつ落として確認する（PR #117 の Codex 指摘）
+      it.each(Object.keys(detailFixture))(
+        '%s が欠けた詳細応答では slugVerified を立てない',
+        async (missingKey) => {
+          const partial: Record<string, unknown> = { ...detailFixture };
+          delete partial[missingKey];
+          mockJsonOnce(partial);
+          mockJsonOnce({ message: 'boom' }, 500);
+          const onCopied = jest.fn();
+
+          await handleCopyGalleryTemplate(
+            { slug: 'invoice-basic' },
+            { onCopied },
+          );
+
+          const observation = onCopied.mock.calls[0][0] as Record<
+            string,
+            unknown
+          >;
+          expect(observation['slugVerified']).toBeUndefined();
+        },
+      );
+
+      it('refresh 後の retry 失敗（AuthRequiredError 包み）は不明として記録する', async () => {
+        // requestWithAuth は retry のあらゆるエラーを AuthRequiredError で包むため、
+        // タイムアウト・5xx が種別ごと潰れて届く（PR #117 の Codex 指摘）。
+        // 第 3 引数 true = 「書き込みを送った後の失敗」を auth.ts が立てた印
+        mockJsonOnce(detailFixture);
+        authMock.requestWithAuth.mockImplementationOnce(() => {
+          throw new authMock.AuthRequiredError(
+            '401 後の再試行失敗',
+            'stdio',
+            true,
+          );
+        });
+        const onCopied = jest.fn();
+
+        await handleCopyGalleryTemplate(
+          { slug: 'invoice-basic' },
+          { onCopied },
+        );
+
+        expect(onCopied).toHaveBeenCalledWith({
+          slug: 'invoice-basic',
+          success: false,
+          outcomeUnknown: true,
+          slugVerified: true,
+        });
+      });
+
+      it.each([
+        ['http 経路の 401（再送していない）', 'http' as const],
+        ['stdio の refresh 失敗（再送していない）', 'stdio' as const],
+      ])('%s は確定した失敗として記録する', async (_name, mode) => {
+        // AuthRequiredError を一律 outcomeUnknown にすると、書き込みが起きて
+        // いないと分かっている認証失敗まで失敗件数から消える（PR #117 の Codex 指摘）
+        mockJsonOnce(detailFixture);
+        authMock.requestWithAuth.mockImplementationOnce(() => {
+          throw new authMock.AuthRequiredError('上流 API が 401', mode);
+        });
+        const onCopied = jest.fn();
+
+        await handleCopyGalleryTemplate(
+          { slug: 'invoice-basic' },
+          { onCopied },
+        );
+
+        expect(onCopied).toHaveBeenCalledWith({
+          slug: 'invoice-basic',
+          success: false,
+          slugVerified: true,
+        });
+      });
+
+      it.each([
+        ['workspaceId が欠損', { workspaceId: undefined }],
+        ['workspaceId が型違い', { workspaceId: 42 }],
+        ['workspaceId が別ワークスペース', { workspaceId: 'ws-other' }],
+        ['templateSlug が型違い', { templateSlug: 7 }],
+        ['templateSlug が別テンプレート', { templateSlug: 'other-template' }],
+        ['duplicatedFileId が空文字', { duplicatedFileId: '' }],
+        ['id が空文字', { id: '' }],
+        ['sourceTemplateVersion が NaN', { sourceTemplateVersion: Number.NaN }],
+        ['createdAt が空文字', { createdAt: '' }],
+        ['createdAt が欠損', { createdAt: undefined }],
+        ['sourceTemplateVersion が型違い', { sourceTemplateVersion: 'v2' }],
+      ])('2xx でも %s の応答は不明として記録する', async (_name, override) => {
+        // duplicatedFileId だけ見ていた頃は、workspaceId が欠損・型違い・
+        // 別ワークスペースでも成功として扱い、その値がそのまま応答と
+        // テレメトリの帰属先になっていた（PR #117 の Codex 指摘）
+        mockJsonOnce(detailFixture);
+        mockJsonOnce({ ...duplicationFixture, ...override }, 201);
+        const onCopied = jest.fn();
+
+        const result = await handleCopyGalleryTemplate(
+          { slug: 'invoice-basic' },
+          { onCopied },
+        );
+
+        expect(result.content[0].text).toContain('作成されたかは不明');
+        expect(onCopied).toHaveBeenCalledWith({
+          slug: 'invoice-basic',
+          success: false,
+          outcomeUnknown: true,
+          slugVerified: true,
+        });
+      });
+
+      it('2xx だが契約外の payload は不明として記録する', async () => {
+        mockJsonOnce(detailFixture);
+        mockJsonOnce({}, 201); // duplicatedFileId キーごと無い
+        const onCopied = jest.fn();
+
+        const result = await handleCopyGalleryTemplate(
+          { slug: 'invoice-basic' },
+          { onCopied },
+        );
+
+        expect(result.content[0].text).toContain('作成されたかは不明');
+        expect(onCopied).toHaveBeenCalledWith({
+          slug: 'invoice-basic',
+          success: false,
+          outcomeUnknown: true,
+          slugVerified: true,
+        });
+      });
+
+      it('契約どおりの duplicatedFileId: null は失敗確定のまま', async () => {
+        mockJsonOnce(detailFixture);
+        mockJsonOnce({ ...duplicationFixture, duplicatedFileId: null }, 201);
+        const onCopied = jest.fn();
+
+        await handleCopyGalleryTemplate(
+          { slug: 'invoice-basic' },
+          { onCopied },
+        );
+
+        expect(onCopied).toHaveBeenCalledWith({
+          slug: 'invoice-basic',
+          success: false,
+          slugVerified: true,
+        });
+      });
+
+      it('複製 POST 失敗時は slugVerified を立てる（実在確認は通っている）', async () => {
+        mockJsonOnce(detailFixture);
+        mockFetch.mockRejectedValueOnce(new Error('Request timed out'));
+        const onCopied = jest.fn();
+
+        await handleCopyGalleryTemplate(
+          { slug: 'invoice-basic' },
+          { onCopied },
+        );
+
+        expect(onCopied).toHaveBeenCalledWith({
+          slug: 'invoice-basic',
+          success: false,
+          outcomeUnknown: true,
+          slugVerified: true,
+        });
+      });
+
+      it('実在確認より前の失敗では slugVerified を立てない', async () => {
+        mockFetch.mockRejectedValueOnce(new TypeError('fetch failed'));
+        const onCopied = jest.fn();
+
+        await handleCopyGalleryTemplate(
+          { slug: 'invoice-basic' },
+          { onCopied },
+        );
+
+        expect(onCopied).toHaveBeenCalledWith({
+          slug: 'invoice-basic',
+          success: false,
+        });
+      });
+
+      it.each(indeterminateCases)('$name', async ({ arrange }) => {
+        arrange();
+        const onCopied = jest.fn();
+
+        const result = await handleCopyGalleryTemplate(
+          { slug: 'invoice-basic' },
+          { onCopied },
+        );
+
+        expect(result.isError).toBe(true);
+        expect(onCopied).toHaveBeenCalledTimes(1);
+        expect(onCopied).toHaveBeenCalledWith({
+          slug: 'invoice-basic',
+          success: false,
+          outcomeUnknown: true,
+          // step 2 の実在確認は通っているので、slug は公開識別子と証明済み
+          slugVerified: true,
+        });
+      });
+
+      const determinateCases: ReadonlyArray<{
+        readonly name: string;
+        readonly arrange: () => void;
+      }> = [
+        {
+          name: '404（サーバーが応答している）',
+          arrange: () => {
+            mockJsonOnce(detailFixture);
+            mockJsonOnce({ message: 'not found' }, 404);
+          },
+        },
+        {
+          name: '412（ガードが入口で弾いており複製処理は動いていない）',
+          arrange: () => {
+            mockJsonOnce(detailFixture);
+            mockJsonOnce({ message: 'app-key required' }, 412);
+          },
+        },
+        {
+          name: '429（プラン上限。作成前に弾かれている）',
+          arrange: () => {
+            mockJsonOnce(detailFixture);
+            mockJsonOnce({ message: 'デザイン数が上限に達しています' }, 429);
+          },
+        },
+        {
+          name: 'duplicatedFileId が無い（デザインが作られなかったことは確定）',
+          arrange: () => {
+            mockJsonOnce(detailFixture);
+            mockJsonOnce(
+              { ...duplicationFixture, duplicatedFileId: null },
+              201,
+            );
+          },
+        },
+        {
+          name: '複製前のテンプレート確認に失敗（書き込みへ進んでいない）',
+          arrange: () =>
+            mockFetch.mockRejectedValueOnce(new TypeError('fetch failed')),
+        },
+      ];
+
+      it.each(determinateCases)(
+        '$name は失敗確定として記録する（キーを付けない）',
+        async ({ name, arrange }) => {
+          arrange();
+          const onCopied = jest.fn();
+
+          const result = await handleCopyGalleryTemplate(
+            { slug: 'invoice-basic' },
+            { onCopied },
+          );
+
+          expect(result.isError).toBe(true);
+          expect(onCopied).toHaveBeenCalledTimes(1);
+          const observation = onCopied.mock.calls[0][0] as Record<
+            string,
+            unknown
+          >;
+          expect(observation['slug']).toBe('invoice-basic');
+          expect(observation['success']).toBe(false);
+          expect(observation['outcomeUnknown']).toBeUndefined();
+          // 実在確認を通った経路だけ slugVerified が付く
+          expect(observation['slugVerified']).toBe(
+            name.startsWith('複製前のテンプレート確認に失敗')
+              ? undefined
+              : true,
+          );
+        },
+      );
+
+      // 文言とフラグは同じ分岐から出しているが、片方だけ増やされたときに黙って
+      // ずれないよう、対応そのものを固定する。
+      //
+      // 判定に使うのは特定の言い回しではなく **`list_templates` への誘導の有無**。
+      // このツールが `list_templates`（＝自分のワークスペースのデザイン一覧）を
+      // 見るよう促すのは「複製されているかもしれないので確かめろ」という一点で、
+      // 書き込みが起きていないと確定している分岐は promptしない
+      // （404 は `search_gallery_templates` へ誘導する）。
+      //
+      // 「完了したかは不明」という字面だけを見ていたときは、同じ欠陥を持つ 5xx
+      // 分岐（文言は『既に作成されていないか確認してください』）を取りこぼした
+      // （developer-docs PR #175 の Codex 指摘）。誘導の有無で見れば漏れない。
+      it('list_templates での確認を促した呼び出しと outcomeUnknown が一致する', async () => {
+        const cases = [
+          ...indeterminateCases.map((c) => ({ ...c, expected: true })),
+          ...determinateCases.map((c) => ({ ...c, expected: false })),
+        ];
+        for (const { name, arrange, expected } of cases) {
+          jest.clearAllMocks();
+          authMock.getAuthWorkspaceId.mockResolvedValue('ws-jwt-1');
+          arrange();
+          const onCopied = jest.fn();
+
+          const result = await handleCopyGalleryTemplate(
+            { slug: 'invoice-basic' },
+            { onCopied },
+          );
+
+          const promptsForCheck =
+            result.content[0].text.includes('list_templates');
+          const observation = onCopied.mock.calls[0][0] as {
+            outcomeUnknown?: boolean;
+          };
+          // 期待値そのものと、文言との一致の両方を見る（片方だけだと、両方を
+          // 同時に間違えたときに素通りする）
+          expect({ name, promptsForCheck }).toEqual({
+            name,
+            promptsForCheck: expected,
+          });
+          expect({
+            name,
+            unknown: observation.outcomeUnknown === true,
+          }).toEqual({ name, unknown: expected });
+        }
+      });
+    });
   });
 });

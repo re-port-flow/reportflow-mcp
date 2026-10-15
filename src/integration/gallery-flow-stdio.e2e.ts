@@ -149,7 +149,9 @@ const handle = (
     res.writeHead(200, {
       'Content-Type': 'application/pdf',
       'Content-Length': PDF_BYTES.length,
-      'File-URL': 'https://files.example.test/download/req-1',
+      // File-URL は Web アプリの出力履歴画面 (直接ダウンロード URL ではない)
+      'File-URL':
+        'https://app.example.test/ws-1/templates/design-1/outputs?requestId=req-1',
       'Request-Id': 'req-1',
       'X-File-Mapping': mapping,
     });

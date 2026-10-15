@@ -1,5 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import { listDesigns } from '../client.js';
+import type { CapabilityToggle } from '../workspace-permission.js';
 
 export const DESIGNS_RESOURCE_URI = 'reportflow://designs';
 
@@ -20,14 +21,16 @@ export const readDesigns = async (uri: URL): Promise<ResourceReadResult> => {
   };
 };
 
-export const registerDesignsResource = (server: McpServer): void => {
-  server.registerResource(
+export const registerDesignsResource = (
+  server: McpServer,
+): CapabilityToggle => {
+  return server.registerResource(
     'designs',
     DESIGNS_RESOURCE_URI,
     {
-      title: 'デザインテンプレート一覧',
+      title: 'テンプレート一覧',
       description:
-        'ワークスペース内のすべてのデザインテンプレート (id / label / latestVersion / thumbnail / updatedAt)。list_templates と同等の内容を Resource として公開。',
+        'ワークスペース内のすべてのテンプレート (id / label / latestVersion / thumbnail / updatedAt)。list_templates と同等の内容を Resource として公開。',
       mimeType: 'application/json',
     },
     readDesigns,

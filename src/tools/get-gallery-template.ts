@@ -12,7 +12,7 @@ import { HttpError } from '../http.js';
 export const getGalleryTemplateTool = {
   name: 'get_gallery_template',
   description:
-    '公開テンプレートギャラリーのテンプレート詳細を slug で取得します（認証不要）。説明全文・カテゴリ・タグ・サムネイルURL・テンプレート版・複製実績数・作成者名を返します。slug は search_gallery_templates の結果から取得してください。重要: ギャラリーのテンプレートはまだワークスペースにありません。この slug では PDF 生成できないため、使う場合は copy_gallery_template で複製し、返された designId を get_design_parameters / generate_pdf_sync に渡してください。',
+    '公開テンプレートギャラリーのテンプレート詳細を slug で取得します（認証不要）。説明全文・カテゴリ・タグ・サムネイルURL・テンプレート版・複製実績数・作成者名を返します。slug は search_gallery_templates の結果から取得してください。重要: ギャラリーのテンプレートはまだワークスペースにありません。この slug では PDF を出力できないため、使う場合は copy_gallery_template で複製し、返された designId を get_design_parameters / generate_pdf_sync に渡してください。',
 };
 
 export const getGalleryTemplateInputSchema = {

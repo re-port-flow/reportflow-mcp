@@ -1,5 +1,6 @@
 import { runWithHttpAuth } from '../auth-context.js';
 import {
+  getInvocationWorkspaceId,
   recordCredentialWorkspace,
   resolveInvocationWorkspaceId,
   runWithInvocationWorkspace,
@@ -141,5 +142,63 @@ describe('resolveInvocationWorkspaceId — HTTP (per-request Bearer 経路)', ()
     expect(
       resolveInvocationWorkspaceId({ workspaceId: 'from-credentials' }),
     ).toBe('from-credentials');
+  });
+});
+
+// ハンドラ自身が追加のイベントを出すとき (`integration.mcp.connected`) に使う。
+// 保存済み資格情報を読み直す実装との違いがここに出る。
+describe('getInvocationWorkspaceId — ハンドラ内からの読み取り', () => {
+  it('実行中の呼び出しに記録された workspace を返す', async () => {
+    await runWithInvocationWorkspace({}, async () => {
+      recordCredentialWorkspace('ws-from-authorize');
+      expect(getInvocationWorkspaceId()).toBe('ws-from-authorize');
+    });
+  });
+
+  it('呼び出しスコープの外では undefined', () => {
+    expect(getInvocationWorkspaceId()).toBeUndefined();
+  });
+
+  it('資格情報を読まずに終わった呼び出しでは undefined', async () => {
+    await runWithInvocationWorkspace({}, async () => {
+      expect(getInvocationWorkspaceId()).toBeUndefined();
+    });
+  });
+
+  // 設計の核 (PRJ-3-1117)。プロセス全体の保存済み資格情報を読み直す実装だと、
+  // 並行する force 再認証が保存した値をこちらが拾ってしまう。
+  it('並行する別呼び出しの記録を拾わない', async () => {
+    let releaseA = (): void => {};
+    const aCanRead = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+
+    const a = runWithInvocationWorkspace({}, async () => {
+      recordCredentialWorkspace('ws-A');
+      await aCanRead;
+      return getInvocationWorkspaceId();
+    });
+
+    const b = runWithInvocationWorkspace({}, async () => {
+      recordCredentialWorkspace('ws-B');
+      releaseA();
+      return getInvocationWorkspaceId();
+    });
+
+    await expect(b).resolves.toBe('ws-B');
+    await expect(a).resolves.toBe('ws-A');
+  });
+
+  // `resolveInvocationWorkspaceId` と同じ規則であることの担保。
+  it('HTTP コンテキストでは per-request の Bearer を優先する', async () => {
+    await runWithInvocationWorkspace({}, async () => {
+      recordCredentialWorkspace('from-credentials');
+      await runWithHttpAuth(
+        { accessToken: jwtWithWorkspace('from-bearer') },
+        async () => {
+          expect(getInvocationWorkspaceId()).toBe('from-bearer');
+        },
+      );
+    });
   });
 });

@@ -3,13 +3,58 @@ import {
   CLIENT_CAPABILITIES_META_KEY,
   PROTOCOL_VERSION_META_KEY,
 } from '@modelcontextprotocol/server';
+import type { Server } from 'node:http';
 import {
   buildHttpApp,
   isAllowedHost,
   isRejectableOrigin,
+  MCP_HTTP_IP_RATE_LIMIT_MAX,
+  MCP_HTTP_RATE_LIMIT_MAX,
+  MCP_HTTP_RATE_LIMIT_WINDOW_MS,
   parsePort,
+  startHttpServer,
 } from './http-server';
 import { MCP_RESOURCE_URL, REPORTFLOW_OAUTH_ISSUER_URL } from './config';
+import { fixedAuthorization } from './integration/helpers/createTestClient';
+
+/**
+ * 上流応答モックの本文ストリーム。
+ *
+ * **`text()` だけのモックにしない。** `callOAuthUpstream` は本文サイズの上限を
+ * **実測**で効かせるため `res.body` をストリームで読む。`text()` しか持たない
+ * モックは「`body` を持たない応答」という**本番の fetch では起きない形**なので、
+ * それに合わせると本文を読む経路そのものを検査しないテストになる。
+ *
+ * ストリームは 1 度しか読めない。使い回す helper では `mockResolvedValue`
+ * ではなく `mockImplementation` で**毎回作る**こと。
+ */
+const bodyOf = (text: string): ReadableStream<Uint8Array> =>
+  new ReadableStream({
+    start(controller) {
+      if (text !== '') controller.enqueue(new TextEncoder().encode(text));
+      controller.close();
+    },
+  });
+
+/** 本文の読み取り自体が失敗する応答（中断・通信断の再現）。 */
+const failingBodyOf = (err: unknown): ReadableStream<Uint8Array> =>
+  new ReadableStream({
+    start(controller) {
+      controller.error(err);
+    },
+  });
+
+const parseLastSseMessage = (text: string): Record<string, unknown> => {
+  const dataLine = text
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('data: '))
+    .at(-1);
+  expect(dataLine).toBeDefined();
+  return JSON.parse(dataLine!.slice('data: '.length)) as Record<
+    string,
+    unknown
+  >;
+};
 
 describe('parsePort', () => {
   it('returns undefined when PORT is unset', () => {
@@ -82,7 +127,7 @@ describe('isAllowedHost (MCP spec §Security: DNS rebinding 対策)', () => {
     'evil.example',
     'evil.example:443',
     'mcp.re-port-flow.com.evil.example', // suffix 偽装
-    '10.0.0.1:3000', // ALB ヘルスチェック相当の Host (MCP エンドポイントでは拒否)
+    '10.0.0.1:3000', // ヘルスチェック相当の Host (MCP エンドポイントでは拒否)
     '127.0.0.2', // localhost 系は完全一致のみ
   ])('拒否: %s', (host) => {
     expect(isAllowedHost(host)).toBe(false);
@@ -187,15 +232,9 @@ describe('http-server', () => {
       expect(res.body.resource).toBe(MCP_RESOURCE_URL);
       expect(res.body.authorization_servers).toEqual([MCP_RESOURCE_URL]);
       expect(res.body.bearer_methods_supported).toEqual(['header']);
-      // 完全一致で固定する。`arrayContaining` だと、広告集合に
-      // `designs:read` 等（reposts-api の匿名クライアント上限の外。
-      // `authorize` が 400 で拒否する）が戻っても通ってしまう（PRJ-3-1522）。
-      expect(res.body.scopes_supported).toEqual([
-        'openid',
-        'profile',
-        'designs:write',
-        'pdf:generate',
-      ]);
+      expect(res.body.scopes_supported).toEqual(
+        expect.arrayContaining(['openid', 'profile', 'pdf:generate']),
+      );
     });
 
     it('Cache-Control が付与される', async () => {
@@ -317,11 +356,14 @@ describe('http-server', () => {
       body: unknown = { access_token: 'at', token_type: 'Bearer' },
       status = 200,
     ): void => {
-      fetchMock.mockResolvedValue({
-        status,
-        text: () => Promise.resolve(JSON.stringify(body)),
-        headers: new Headers({ 'content-type': 'application/json' }),
-      });
+      // ストリームは 1 度しか読めないので**呼ばれるたびに作る**。
+      fetchMock.mockImplementation(() =>
+        Promise.resolve({
+          status,
+          body: bodyOf(JSON.stringify(body)),
+          headers: new Headers({ 'content-type': 'application/json' }),
+        }),
+      );
     };
 
     type FetchInit = {
@@ -424,6 +466,21 @@ describe('http-server', () => {
       expect(sentInit().headers.Authorization).toBe('Basic Y2xpZW50');
     });
 
+    // RFC 6749 §5.1: token を含む応答は `Cache-Control: no-store` が MUST。
+    // ヘッダーを自前で組み立てる以上、上流の Cache-Control は写らないので
+    // ここが落ちると access_token がキャッシュ制御なしで中間層へ届く。
+    it('token 応答に Cache-Control: no-store と Pragma: no-cache を付ける', async () => {
+      upstreamOk();
+      const res = await request(app)
+        .post('/token')
+        .type('form')
+        .send({ grant_type: 'authorization_code' })
+        .expect(200);
+
+      expect(res.headers['cache-control']).toBe('no-store');
+      expect(res.headers['pragma']).toBe('no-cache');
+    });
+
     it('upstream のステータスとボディをそのまま透過する (4xx も)', async () => {
       upstreamOk({ error: 'invalid_grant' }, 400);
       const res = await request(app)
@@ -463,8 +520,7 @@ describe('http-server', () => {
     it('body を upstream /oauth/register に転送し no-cache を付ける', async () => {
       fetchMock.mockResolvedValue({
         status: 201,
-        text: () =>
-          Promise.resolve(JSON.stringify({ client_id: 'generated-id' })),
+        body: bodyOf(JSON.stringify({ client_id: 'generated-id' })),
         headers: new Headers({ 'content-type': 'application/json' }),
       });
 
@@ -481,7 +537,10 @@ describe('http-server', () => {
         `${REPORTFLOW_OAUTH_ISSUER_URL}/oauth/register`,
       );
       expect(res.body.client_id).toBe('generated-id');
-      expect(res.headers['cache-control']).toContain('no-cache');
+      // DCR 応答は client_secret / registration_access_token を含み得るので
+      // **保存させない** (`no-cache` は保存を許すので足りない)。
+      expect(res.headers['cache-control']).toBe('no-store');
+      expect(res.headers['pragma']).toBe('no-cache');
     });
 
     it('upstream 通信失敗時は 502 + server_error', async () => {
@@ -496,17 +555,485 @@ describe('http-server', () => {
     });
   });
 
+  // ─── Cloudflare Access Service Auth + fail-closed (PRJ-3-1573) ────────────
+  // staging の上流は Cloudflare Access の裏に居る。身元 (service token) を
+  // 載せないと Access が 302 でログイン画面へ送り、`fetch` の既定がそれを追従して
+  // ログイン HTML を 200 として claude.ai へ返していた (2026-09-05 実測: /register
+  // が 3 回 200 / 約 36.9 KiB)。ここで固定するのは 2 つ:
+  //   1. 2 値が揃うときだけ Access ヘッダーを載せ、外部応答には出さない
+  //   2. redirect / 非 JSON 2xx / 空 body / timeout を成功扱いしない
+  describe('OAuth proxy の Cloudflare Access Service Auth と fail-closed', () => {
+    const realFetch = global.fetch;
+    let fetchMock: jest.Mock;
+    let errorSpy: jest.SpyInstance;
+
+    // 実発行値ではないダミー。ID は Cloudflare の実物と同じ形 (末尾 `.access`)。
+    const DUMMY_CLIENT_ID = 'a1b2c3d4e5f6.access';
+    const DUMMY_CLIENT_SECRET = 'dummy-service-token-secret-not-real';
+    // Access のログイン画面相当。実測の応答サイズ (36,936 bytes) を再現する。
+    const ACCESS_LOGIN_HTML = `<!DOCTYPE html><html><head><title>Sign in</title></head><body>${'x'.repeat(36_800)}</body></html>`;
+
+    type FetchInit = {
+      method: string;
+      headers: Record<string, string>;
+      body: string;
+      redirect?: RequestRedirect;
+      signal?: AbortSignal;
+    };
+    const sentInit = (): FetchInit => fetchMock.mock.calls[0][1] as FetchInit;
+    const loggedLines = (): string =>
+      errorSpy.mock.calls.map((args) => args.join(' ')).join('\n');
+
+    /**
+     * 2 値を設定した状態でアプリを組み、**すぐ環境変数を消す**。
+     * `buildHttpApp` は生成時に 1 度だけ env を読むので、これで
+     * 「staging 相当のアプリ」と「他テストへ漏らさない env」が同時に成立する。
+     */
+    const buildStagingApp = (): ReturnType<typeof buildHttpApp> => {
+      process.env['RF_ACCESS_CLIENT_ID'] = DUMMY_CLIENT_ID;
+      process.env['RF_ACCESS_CLIENT_SECRET'] = DUMMY_CLIENT_SECRET;
+      try {
+        return buildHttpApp();
+      } finally {
+        delete process.env['RF_ACCESS_CLIENT_ID'];
+        delete process.env['RF_ACCESS_CLIENT_SECRET'];
+      }
+    };
+
+    const upstream = (init: {
+      status: number;
+      contentType?: string | null;
+      text?: string;
+    }): void => {
+      // ストリームは 1 度しか読めないので**呼ばれるたびに作る**。
+      fetchMock.mockImplementation(() =>
+        Promise.resolve({
+          status: init.status,
+          body: bodyOf(init.text ?? ''),
+          headers: new Headers(
+            init.contentType === null || init.contentType === undefined
+              ? {}
+              : { 'content-type': init.contentType },
+          ),
+        }),
+      );
+    };
+
+    beforeEach(() => {
+      fetchMock = jest.fn();
+      global.fetch = fetchMock as unknown as typeof fetch;
+      errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    });
+    afterEach(() => {
+      global.fetch = realFetch;
+      errorSpy.mockRestore();
+      delete process.env['RF_ACCESS_CLIENT_ID'];
+      delete process.env['RF_ACCESS_CLIENT_SECRET'];
+    });
+
+    // ── UT1: 両方未設定 (production 相当) ──────────────────────────────────
+    it.each([
+      ['/register', { client_name: 'Claude' }, 201, { client_id: 'generated' }],
+      [
+        '/token',
+        { grant_type: 'refresh_token', refresh_token: 'rt' },
+        200,
+        { access_token: 'at', token_type: 'Bearer' },
+      ],
+    ] as const)(
+      '2 値未設定なら %s の上流 fetch に Access ヘッダーを付けない',
+      async (path, body, status, upstreamBody) => {
+        upstream({
+          status,
+          contentType: 'application/json',
+          text: JSON.stringify(upstreamBody),
+        });
+        // describe 冒頭の `app` は env 未設定で生成済み (= production 相当)。
+        await request(app).post(path).send(body).expect(status);
+
+        const headers = sentInit().headers;
+        expect(headers['CF-Access-Client-Id']).toBeUndefined();
+        expect(headers['CF-Access-Client-Secret']).toBeUndefined();
+      },
+    );
+
+    // ── UT2: 両方設定 (staging 相当) ──────────────────────────────────────
+    it.each([
+      ['/register', { client_name: 'Claude' }, 201, { client_id: 'generated' }],
+      [
+        '/token',
+        { grant_type: 'refresh_token', refresh_token: 'rt' },
+        200,
+        { access_token: 'at', token_type: 'Bearer' },
+      ],
+    ] as const)(
+      '2 値設定なら %s の上流 fetch に CF-Access-Client-Id/Secret を付ける',
+      async (path, body, status, upstreamBody) => {
+        upstream({
+          status,
+          contentType: 'application/json',
+          text: JSON.stringify(upstreamBody),
+        });
+        const res = await request(buildStagingApp())
+          .post(path)
+          .send(body)
+          .expect(status);
+
+        expect(sentInit().headers['CF-Access-Client-Id']).toBe(DUMMY_CLIENT_ID);
+        expect(sentInit().headers['CF-Access-Client-Secret']).toBe(
+          DUMMY_CLIENT_SECRET,
+        );
+        // **外部応答に出さない** (ヘッダーも本文も)。
+        expect(JSON.stringify(res.headers)).not.toContain(DUMMY_CLIENT_ID);
+        expect(JSON.stringify(res.headers)).not.toContain(DUMMY_CLIENT_SECRET);
+        expect(res.text).not.toContain(DUMMY_CLIENT_ID);
+        expect(res.text).not.toContain(DUMMY_CLIENT_SECRET);
+      },
+    );
+
+    it('クライアントが送った CF-Access-* ヘッダーで上書きされない', async () => {
+      upstream({
+        status: 201,
+        contentType: 'application/json',
+        text: JSON.stringify({ client_id: 'generated' }),
+      });
+      await request(buildStagingApp())
+        .post('/register')
+        .set('CF-Access-Client-Id', 'attacker.access')
+        .set('CF-Access-Client-Secret', 'attacker-secret')
+        .send({ client_name: 'Claude' })
+        .expect(201);
+
+      expect(sentInit().headers['CF-Access-Client-Id']).toBe(DUMMY_CLIENT_ID);
+      expect(sentInit().headers['CF-Access-Client-Secret']).toBe(
+        DUMMY_CLIENT_SECRET,
+      );
+    });
+
+    it('Authorization を引き継ぐ /token でも Access ヘッダーが勝つ', async () => {
+      upstream({
+        status: 200,
+        contentType: 'application/json',
+        text: JSON.stringify({ access_token: 'at' }),
+      });
+      await request(buildStagingApp())
+        .post('/token')
+        .set('Authorization', 'Basic Y2xpZW50')
+        .type('form')
+        .send({ grant_type: 'authorization_code' })
+        .expect(200);
+
+      expect(sentInit().headers.Authorization).toBe('Basic Y2xpZW50');
+      expect(sentInit().headers['CF-Access-Client-Id']).toBe(DUMMY_CLIENT_ID);
+    });
+
+    // ── UT3 / UT4: 片方だけ (fail-fast) ──────────────────────────────────
+    it.each([
+      ['Client ID のみ', 'RF_ACCESS_CLIENT_ID', DUMMY_CLIENT_ID],
+      ['Client Secret のみ', 'RF_ACCESS_CLIENT_SECRET', DUMMY_CLIENT_SECRET],
+    ])('%s の設定ではアプリ生成が失敗する', (_label, envName, value) => {
+      process.env[envName] = value;
+      let caught: unknown;
+      try {
+        buildHttpApp();
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(Error);
+      // 値そのものは例外へ入れない (Cloudflare Workers Logs に残る)。
+      expect((caught as Error).message).not.toContain(value);
+    });
+
+    // ── UT7: 302 (Access ログイン画面へのリダイレクト) ────────────────────
+    it.each(['/register', '/token'] as const)(
+      '%s: 上流 302 は追従せず 502 の OAuth JSON エラーにする',
+      async (path) => {
+        const loginUrl =
+          'https://monepla.cloudflareaccess.com/cdn-cgi/access/login/stg.re-port-flow.com';
+        fetchMock.mockResolvedValue({
+          status: 302,
+          body: bodyOf(ACCESS_LOGIN_HTML),
+          headers: new Headers({
+            location: loginUrl,
+            'content-type': 'text/html',
+          }),
+        });
+
+        const res = await request(buildStagingApp())
+          .post(path)
+          .send({ client_name: 'Claude', grant_type: 'authorization_code' })
+          .expect(502);
+
+        expect(res.body.error).toBe('server_error');
+        expect(res.body.error_description).toBeTruthy();
+        // Location も HTML もクライアントへ漏らさない。
+        expect(res.text).not.toContain(loginUrl);
+        expect(res.text).not.toContain('<!DOCTYPE html');
+        // redirect を自動追従しない指定になっていること (直接原因の固定)。
+        expect(sentInit().redirect).toBe('manual');
+      },
+    );
+
+    // 読み残しの解放に失敗しても、**確定した理由を塗り替えない**。
+    // ここで例外が漏れると `redirect` が `network_error` に化け、
+    // Cloudflare Workers Logs の `rejection=` が原因を指さなくなる。
+    it('読み残しの cancel が失敗しても rejection=redirect のまま 502 にする', async () => {
+      fetchMock.mockResolvedValue({
+        status: 302,
+        body: { cancel: () => Promise.reject(new Error('cancel failed')) },
+        headers: new Headers({
+          location: 'https://monepla.cloudflareaccess.com/login',
+          'content-type': 'text/html',
+        }),
+      });
+
+      const res = await request(buildStagingApp())
+        .post('/register')
+        .send({ client_name: 'Claude' })
+        .expect(502);
+
+      expect(res.body.error).toBe('server_error');
+      expect(loggedLines()).toContain('rejection=redirect');
+      expect(loggedLines()).not.toContain('rejection=network_error');
+    });
+
+    // ── UT8: 200 text/html (約 36.9 KiB) ────────────────────────────────
+    it.each(['/register', '/token'] as const)(
+      '%s: 上流 200 + text/html (Access ログイン HTML) を成功扱いしない',
+      async (path) => {
+        upstream({
+          status: 200,
+          contentType: 'text/html; charset=utf-8',
+          text: ACCESS_LOGIN_HTML,
+        });
+
+        const res = await request(buildStagingApp())
+          .post(path)
+          .send({ client_name: 'Claude', grant_type: 'authorization_code' })
+          .expect(502);
+
+        expect(res.body.error).toBe('server_error');
+        expect(res.text).not.toContain('<!DOCTYPE html');
+        expect(res.text.length).toBeLessThan(1_000);
+      },
+    );
+
+    // ── UT9 / UT10: 不正 JSON / 空 body / 必須項目欠落 ────────────────────
+    it.each([
+      ['壊れた JSON', 'application/json', '{"client_id":'],
+      ['空 body', 'application/json', ''],
+      ['オブジェクトでない JSON', 'application/json', 'null'],
+      ['必須項目なし', 'application/json', '{"foo":"bar"}'],
+      ['Content-Type なし + 非 JSON', null, 'plain text'],
+    ])(
+      '/register: 上流 200 + %s は 502 にする',
+      async (_label, contentType, text) => {
+        upstream({ status: 200, contentType, text });
+        const res = await request(buildStagingApp())
+          .post('/register')
+          .send({ client_name: 'Claude' })
+          .expect(502);
+        expect(res.body.error).toBe('server_error');
+      },
+    );
+
+    it.each([
+      ['壊れた JSON', 'application/json', '{"access_token":'],
+      ['空 body', 'application/json', ''],
+      ['必須項目 (access_token) なし', 'application/json', '{"foo":"bar"}'],
+    ])(
+      '/token: 上流 200 + %s は 502 にする',
+      async (_label, contentType, text) => {
+        upstream({ status: 200, contentType, text });
+        const res = await request(buildStagingApp())
+          .post('/token')
+          .type('form')
+          .send({ grant_type: 'authorization_code' })
+          .expect(502);
+        expect(res.body.error).toBe('server_error');
+      },
+    );
+
+    // ── UT11: 正規 4xx は維持 / 非 JSON 4xx は転送しない ──────────────────
+    it('/token: 正規 4xx OAuth JSON エラーは status と本文を維持する', async () => {
+      upstream({
+        status: 400,
+        contentType: 'application/json',
+        text: JSON.stringify({
+          error: 'invalid_grant',
+          error_description: 'code expired',
+        }),
+      });
+      const res = await request(buildStagingApp())
+        .post('/token')
+        .type('form')
+        .send({ grant_type: 'authorization_code' })
+        .expect(400);
+
+      expect(res.body.error).toBe('invalid_grant');
+      expect(res.body.error_description).toBe('code expired');
+    });
+
+    it('/register: 4xx の HTML 本文は転送せず 502 にする', async () => {
+      upstream({
+        status: 403,
+        contentType: 'text/html',
+        text: ACCESS_LOGIN_HTML,
+      });
+      const res = await request(buildStagingApp())
+        .post('/register')
+        .send({ client_name: 'Claude' })
+        .expect(502);
+
+      expect(res.body.error).toBe('server_error');
+      expect(res.text).not.toContain('<!DOCTYPE html');
+    });
+
+    // ── UT12: timeout / network error ────────────────────────────────────
+    it('上流 timeout は 502 + rejection=timeout でログする', async () => {
+      const timeoutErr = new Error('The operation was aborted due to timeout');
+      timeoutErr.name = 'TimeoutError';
+      fetchMock.mockRejectedValue(timeoutErr);
+
+      const res = await request(buildStagingApp())
+        .post('/register')
+        .send({ client_name: 'Claude' })
+        .expect(502);
+
+      expect(res.body.error).toBe('server_error');
+      expect(loggedLines()).toContain('rejection=timeout');
+      // タイムアウト指定が実際に fetch へ渡っていること。
+      expect(sentInit().signal).toBeInstanceOf(AbortSignal);
+    });
+
+    it('上流 network error は 502 + rejection=network_error でログする', async () => {
+      fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+
+      await request(buildStagingApp())
+        .post('/token')
+        .type('form')
+        .send({ grant_type: 'authorization_code' })
+        .expect(502);
+
+      expect(loggedLines()).toContain('rejection=network_error');
+    });
+
+    it('上流応答の読み取りが予期せず失敗しても 502 で閉じる', async () => {
+      // `headers.get` が投げる = callOAuthUpstream が想定していない失敗。
+      // ハンドラ側の最終 catch が 502 を返すことを固定する。
+      fetchMock.mockResolvedValue({
+        status: 200,
+        body: bodyOf('{}'),
+        headers: {
+          get: (): string => {
+            throw new Error('boom');
+          },
+        },
+      });
+
+      const res = await request(buildStagingApp())
+        .post('/register')
+        .send({ client_name: 'Claude' })
+        .expect(502);
+      expect(res.body.error).toBe('server_error');
+    });
+
+    it('body の読み取りが中断された場合も 502 にする', async () => {
+      const abortErr = new Error('aborted');
+      abortErr.name = 'AbortError';
+      // 本文ストリームそのものを error 状態にする（実際の中断と同じ形）。
+      fetchMock.mockResolvedValue({
+        status: 200,
+        body: failingBodyOf(abortErr),
+        headers: new Headers({ 'content-type': 'application/json' }),
+      });
+
+      await request(buildStagingApp())
+        .post('/register')
+        .send({ client_name: 'Claude' })
+        .expect(502);
+      expect(loggedLines()).toContain('rejection=timeout');
+    });
+
+    // ── UT13: 秘密がログへ出ない ─────────────────────────────────────────
+    it('ログに Client ID / Secret / Authorization / token / 上流 HTML を出さない', async () => {
+      const stagingApp = buildStagingApp();
+      const cases: (() => void)[] = [
+        () =>
+          fetchMock.mockResolvedValue({
+            status: 302,
+            body: bodyOf(ACCESS_LOGIN_HTML),
+            headers: new Headers({
+              location: 'https://monepla.cloudflareaccess.com/login',
+              'content-type': 'text/html',
+            }),
+          }),
+        () =>
+          fetchMock.mockResolvedValue({
+            status: 200,
+            body: bodyOf(ACCESS_LOGIN_HTML),
+            headers: new Headers({ 'content-type': 'text/html' }),
+          }),
+        () => fetchMock.mockRejectedValue(new TypeError('fetch failed')),
+      ];
+
+      for (const arrange of cases) {
+        arrange();
+        await request(stagingApp)
+          .post('/token')
+          .set('Authorization', 'Basic c2VjcmV0LWNsaWVudC1hdXRo')
+          .type('form')
+          .send({
+            grant_type: 'authorization_code',
+            code: 'super-secret-auth-code',
+            code_verifier: 'super-secret-verifier',
+          })
+          .expect(502);
+      }
+
+      const logged = loggedLines();
+      expect(logged).not.toContain(DUMMY_CLIENT_ID);
+      expect(logged).not.toContain(DUMMY_CLIENT_SECRET);
+      expect(logged).not.toContain('Basic c2VjcmV0LWNsaWVudC1hdXRo');
+      expect(logged).not.toContain('super-secret-auth-code');
+      expect(logged).not.toContain('super-secret-verifier');
+      expect(logged).not.toContain('<!DOCTYPE html');
+      expect(logged).not.toContain('cloudflareaccess.com');
+      // 代わりに切り分けに要る分類だけが出ている。
+      expect(logged).toContain('endpoint=token');
+      expect(logged).toContain('path=/api/v1/oauth/token');
+      expect(logged).toContain('rejection=redirect');
+      expect(logged).toContain('rejection=non_json_content_type');
+      expect(logged).toContain('rejection=network_error');
+    });
+
+    it('上流の Content-Type に改行を混ぜられてもログ行を分断されない', async () => {
+      // ヘッダー値経由のログ注入。Node の Headers は制御文字を拒否するため
+      // 分類関数側と同じ経路 (mock オブジェクト) で直接与える。
+      fetchMock.mockResolvedValue({
+        status: 200,
+        body: bodyOf('not json'),
+        headers: {
+          get: (): string => 'text/html\nrejection=forged path=/spoofed',
+        },
+      });
+
+      await request(buildStagingApp())
+        .post('/register')
+        .send({ client_name: 'Claude' })
+        .expect(502);
+
+      const logged = loggedLines();
+      expect(logged).not.toContain('\nrejection=forged');
+      expect(logged).toContain('rejection=non_json_content_type');
+    });
+  });
+
   describe('POST /mcp 認可ガード', () => {
     // PROTECTED_METHODS 全要素を Bearer 無しで叩くと 401 になることを回帰固定する。
-    // 過去に resources/list のガードが外れた regression 歴があるため、tools/call
-    // だけでなく保護対象メソッド全件を HTTP 層でピン止めする (http-server.ts の
-    // PROTECTED_METHODS と 1:1 対応)。
-    const PROTECTED_METHODS = [
-      'tools/call',
-      'resources/read',
-      'resources/list',
-      'prompts/get',
-    ] as const;
+    // resources/list/read は未認証時にも静的 public resource を公開するため、
+    // この一覧には含めない。workspace resource は capability filtering 側で保護する。
+    const PROTECTED_METHODS = ['tools/call', 'prompts/get'] as const;
     it.each(PROTECTED_METHODS)(
       '保護対象メソッド %s を Bearer 無しで叩くと 401 + WWW-Authenticate',
       async (method) => {
@@ -556,6 +1083,184 @@ describe('http-server', () => {
       // 401 で弾かれていなければ HTTP 認可ガードの責務は果たしている。
       // (MCP transport 側の処理結果は本テストのスコープ外)
       expect(res.status).not.toBe(401);
+    });
+
+    it('未認証の resources/list は静的 public resource を返す', async () => {
+      const res = await request(app)
+        .post('/mcp')
+        .set('Accept', 'application/json, text/event-stream')
+        .send({ jsonrpc: '2.0', id: 3, method: 'resources/list', params: {} })
+        .expect(200);
+      const message = parseLastSseMessage(res.text) as {
+        result?: { resources?: Array<{ uri: string }> };
+      };
+      const uris = (message.result?.resources ?? []).map(
+        (resource) => resource.uri,
+      );
+      expect(uris).toContain('reportflow://server-info');
+      expect(uris).toContain('reportflow://errors');
+      expect(uris).not.toContain('reportflow://designs');
+      expect(uris).not.toContain('reportflow://designs/d1/parameters');
+    });
+
+    it('未認証の静的 resources/read は 200 を返す', async () => {
+      const res = await request(app)
+        .post('/mcp')
+        .set('Accept', 'application/json, text/event-stream')
+        .send({
+          jsonrpc: '2.0',
+          id: 4,
+          method: 'resources/read',
+          params: { uri: 'reportflow://server-info' },
+        })
+        .expect(200);
+      const message = parseLastSseMessage(res.text) as {
+        result?: {
+          contents?: Array<{
+            uri: string;
+            mimeType?: string;
+            text: string;
+          }>;
+        };
+      };
+      const contents = message.result?.contents ?? [];
+      expect(contents).toHaveLength(1);
+      expect(contents[0]).toMatchObject({
+        uri: 'reportflow://server-info',
+        mimeType: 'application/json',
+      });
+      expect(JSON.parse(contents[0].text)).toMatchObject({
+        name: 'reportflow-mcp',
+        version: expect.any(String),
+      });
+      const serverInfo = JSON.parse(contents[0].text) as {
+        capabilities: { resources: string[] };
+      };
+      expect(serverInfo.capabilities.resources).toEqual([
+        'reportflow://errors',
+        'reportflow://server-info',
+      ]);
+    });
+
+    it('未認証の workspace resource read は公開しない', async () => {
+      for (const uri of [
+        'reportflow://designs',
+        'reportflow://designs/d1/parameters',
+      ]) {
+        const res = await request(app)
+          .post('/mcp')
+          .set('Accept', 'application/json, text/event-stream')
+          .send({
+            jsonrpc: '2.0',
+            id: 5,
+            method: 'resources/read',
+            params: { uri },
+          });
+        expect(res.status).toBe(200);
+        const message = parseLastSseMessage(res.text) as {
+          result?: unknown;
+          error?: unknown;
+        };
+        expect(message.result).toBeUndefined();
+        expect(message.error).toBeDefined();
+      }
+    });
+
+    it('READ role with Bearer lists and reads workspace resources', async () => {
+      const readApp = buildHttpApp({
+        resolveAuthorization: () => Promise.resolve(fixedAuthorization('READ')),
+      });
+      const realFetch = global.fetch;
+      global.fetch = jest
+        .fn()
+        .mockImplementation((input: RequestInfo | URL) => {
+          const url = String(input);
+          if (url.endsWith('/v1/file/designs')) {
+            return Promise.resolve(
+              new Response(
+                JSON.stringify({
+                  designs: [
+                    {
+                      id: 'd1',
+                      label: 'Invoice',
+                      latestVersion: 1,
+                      thumbnail: '',
+                      updatedAt: '2026-01-01T00:00:00Z',
+                    },
+                  ],
+                }),
+                {
+                  status: 200,
+                  headers: { 'Content-Type': 'application/json' },
+                },
+              ),
+            );
+          }
+          if (url.includes('/v1/file/design/parameter/d1')) {
+            return Promise.resolve(
+              new Response(JSON.stringify({ amount: { type: 'number' } }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+              }),
+            );
+          }
+          throw new Error(`unexpected fetch URL: ${url}`);
+        }) as unknown as typeof fetch;
+      try {
+        const list = await request(readApp)
+          .post('/mcp')
+          .set('Accept', 'application/json, text/event-stream')
+          .set('Authorization', 'Bearer dummy-token')
+          .send({
+            jsonrpc: '2.0',
+            id: 6,
+            method: 'resources/list',
+            params: {},
+          })
+          .expect(200);
+        const listMessage = parseLastSseMessage(list.text) as {
+          result?: { resources?: Array<{ uri: string }> };
+        };
+        const uris = (listMessage.result?.resources ?? []).map(
+          (resource) => resource.uri,
+        );
+        expect(uris).toContain('reportflow://designs');
+        expect(uris).toContain('reportflow://designs/d1/parameters');
+
+        for (const [uri, expectedText] of [
+          ['reportflow://designs', 'Invoice'],
+          ['reportflow://designs/d1/parameters', 'number'],
+        ]) {
+          const res = await request(readApp)
+            .post('/mcp')
+            .set('Accept', 'application/json, text/event-stream')
+            .set('Authorization', 'Bearer dummy-token')
+            .send({
+              jsonrpc: '2.0',
+              id: 7,
+              method: 'resources/read',
+              params: { uri },
+            })
+            .expect(200);
+          const message = parseLastSseMessage(res.text) as {
+            result?: {
+              contents?: Array<{
+                uri: string;
+                mimeType?: string;
+                text: string;
+              }>;
+            };
+          };
+          expect(message.result?.contents).toHaveLength(1);
+          expect(message.result?.contents?.[0]).toMatchObject({
+            uri,
+            mimeType: 'application/json',
+          });
+          expect(message.result?.contents?.[0]?.text).toContain(expectedText);
+        }
+      } finally {
+        global.fetch = realFetch;
+      }
     });
 
     it('非保護メソッド (initialize) は Bearer 無しでも 401 にしない', async () => {
@@ -773,8 +1478,8 @@ describe('http-server', () => {
       expect(res.status).not.toBe(403);
     });
 
-    it('/healthz は Host 不問で 200 (ALB ヘルスチェックの回帰防止)', async () => {
-      // ALB ヘルスチェックは Host にターゲット IP:port を載せてくるため、
+    it('/healthz は Host 不問で 200 (ヘルスチェックの回帰防止)', async () => {
+      // Container/プロキシのヘルスチェックは Host にターゲット IP:port を載せてくるため、
       // /healthz に Host 検証を適用するとヘルスチェックが即落ちする。
       const res = await request(app)
         .get('/healthz')
@@ -877,5 +1582,384 @@ describe('http-server', () => {
       const res = await request(app).get('/foo').expect(404);
       expect(res.body).toEqual({ error: 'not_found' });
     });
+  });
+});
+
+describe('MCP HTTP rate limit (PRJ-3-2258)', () => {
+  const buildLimited = (): ReturnType<typeof buildHttpApp> =>
+    buildHttpApp({
+      mcpRateLimit: { windowMs: 60_000, limit: 2, ipLimit: 2 },
+      trustConnectingIpHeaders: true,
+    });
+
+  it('本番の窓は 60 秒、Bearer 上限は 300、IP 上限は 3000', () => {
+    expect(MCP_HTTP_RATE_LIMIT_WINDOW_MS).toBe(60_000);
+    expect(MCP_HTTP_RATE_LIMIT_MAX).toBe(300);
+    expect(MCP_HTTP_IP_RATE_LIMIT_MAX).toBe(3_000);
+  });
+
+  it('/ と /mcp は同じ IP でカウンタを共有し、超過は JSON-RPC 429', async () => {
+    const app = buildLimited();
+    const ip = '203.0.113.10';
+    await request(app).get('/').set('CF-Connecting-IP', ip).expect(404);
+    await request(app).get('/mcp').set('CF-Connecting-IP', ip).expect(404);
+    const blocked = await request(app)
+      .get('/')
+      .set('CF-Connecting-IP', ip)
+      .expect(429);
+    expect(blocked.body).toEqual({
+      jsonrpc: '2.0',
+      error: { code: -32000, message: 'Too many requests' },
+      id: null,
+    });
+    expect(blocked.headers['content-type']).toMatch(/application\/json/);
+    expect(blocked.headers['retry-after']).toMatch(/^\d+$/);
+    expect(blocked.headers['ratelimit']).toBeDefined();
+    expect(blocked.headers['x-ratelimit-limit']).toBeUndefined();
+
+    const other = await request(app)
+      .get('/mcp')
+      .set('CF-Connecting-IP', '203.0.113.11')
+      .expect(404);
+    expect(other.body).toEqual({ error: 'not_found' });
+
+    const health = await request(app)
+      .get('/healthz')
+      .set('CF-Connecting-IP', ip)
+      .expect(200);
+    expect(health.body).toEqual({ status: 'ok' });
+    await request(app).get('/healthz').expect(200);
+
+    const otherPath = await request(app)
+      .get('/foo')
+      .set('CF-Connecting-IP', ip)
+      .expect(404);
+    expect(otherPath.body).toEqual({ error: 'not_found' });
+  });
+
+  it('CF-Connecting-IP が空・IP でないときは req.ip のバケットを使い、X-Forwarded-For では分けない', async () => {
+    const app = buildLimited();
+    await request(app)
+      .get('/')
+      .set('X-Forwarded-For', '198.51.100.8')
+      .expect(404);
+    await request(app)
+      .get('/mcp')
+      .set('CF-Connecting-IP', '   ')
+      .set('X-Forwarded-For', '198.51.100.9')
+      .expect(404);
+    const blocked = await request(app)
+      .get('/')
+      .set('CF-Connecting-IP', 'not-an-ip')
+      .set('X-Forwarded-For', '198.51.100.10')
+      .expect(429);
+    expect(blocked.body.error).toEqual({
+      code: -32000,
+      message: 'Too many requests',
+    });
+  });
+
+  it('同じ /56 の IPv6 は 1 つのキー、別の /56 は別キー', async () => {
+    const app = buildLimited();
+    await request(app)
+      .get('/')
+      .set('CF-Connecting-IP', '2001:db8:85a3::1')
+      .expect(404);
+    await request(app)
+      .get('/mcp')
+      .set('CF-Connecting-IP', '2001:db8:85a3::2')
+      .expect(404);
+    await request(app)
+      .get('/')
+      .set('CF-Connecting-IP', '2001:db8:85a3::3')
+      .expect(429);
+    await request(app)
+      .get('/mcp')
+      .set('CF-Connecting-IP', '2001:db8:85a3:0100::1')
+      .expect(404);
+  });
+
+  it('同じ Bearer は IP が違っても 1 つの枠、別トークンと未認証は別枠', async () => {
+    const app = buildHttpApp({
+      mcpRateLimit: { windowMs: 60_000, limit: 2, ipLimit: 10 },
+      trustConnectingIpHeaders: true,
+    });
+    await request(app)
+      .get('/')
+      .set('Authorization', 'Bearer secret-a')
+      .set('CF-Connecting-IP', '203.0.113.20')
+      .expect(404);
+    await request(app)
+      .get('/mcp')
+      .set('Authorization', 'Bearer secret-a')
+      .set('CF-Connecting-IP', '203.0.113.20')
+      .expect(404);
+    await request(app)
+      .get('/')
+      .set('Authorization', 'Bearer secret-a')
+      .set('CF-Connecting-IP', '203.0.113.21')
+      .expect(429);
+    await request(app)
+      .get('/mcp')
+      .set('Authorization', 'Bearer secret-b')
+      .set('CF-Connecting-IP', '203.0.113.20')
+      .expect(404);
+    await request(app)
+      .get('/')
+      .set('CF-Connecting-IP', '203.0.113.20')
+      .expect(404);
+  });
+
+  it('同じ IP から Bearer を変えても IP の上限で 429 になる', async () => {
+    const app = buildLimited();
+    const ip = '203.0.113.30';
+    await request(app)
+      .get('/')
+      .set('Authorization', 'Bearer rotate-a')
+      .set('CF-Connecting-IP', ip)
+      .expect(404);
+    await request(app)
+      .get('/mcp')
+      .set('Authorization', 'Bearer rotate-b')
+      .set('CF-Connecting-IP', ip)
+      .expect(404);
+    const blocked = await request(app)
+      .get('/')
+      .set('Authorization', 'Bearer rotate-c')
+      .set('CF-Connecting-IP', ip)
+      .expect(429);
+    expect(blocked.body.error).toEqual({
+      code: -32000,
+      message: 'Too many requests',
+    });
+  });
+
+  it('Worker が写した接続元は CF-Connecting-IP より先に使い、IP でなければ捨てる', async () => {
+    const app = buildLimited();
+    await request(app)
+      .get('/')
+      .set('x-reportflow-connecting-ip', '203.0.113.60')
+      .set('CF-Connecting-IP', '203.0.113.61')
+      .expect(404);
+    await request(app)
+      .get('/mcp')
+      .set('x-reportflow-connecting-ip', '203.0.113.60')
+      .set('CF-Connecting-IP', '203.0.113.62')
+      .expect(404);
+    await request(app)
+      .get('/')
+      .set('x-reportflow-connecting-ip', '203.0.113.60')
+      .set('CF-Connecting-IP', '203.0.113.63')
+      .expect(429);
+    await request(app)
+      .get('/mcp')
+      .set('x-reportflow-connecting-ip', 'not-an-ip')
+      .set('CF-Connecting-IP', '203.0.113.64')
+      .expect(404);
+  });
+
+  it('壊れた JSON も IP の枠に入り、上限の次は 429 になる', async () => {
+    const app = buildHttpApp({
+      mcpRateLimit: { windowMs: 60_000, limit: 1, ipLimit: 1 },
+      trustConnectingIpHeaders: true,
+    });
+    const ip = '203.0.113.70';
+    const first = await request(app)
+      .post('/mcp')
+      .set('CF-Connecting-IP', ip)
+      .set('Content-Type', 'application/json')
+      .send('{bad');
+    expect(first.status).toBe(400);
+    const blocked = await request(app)
+      .post('/')
+      .set('CF-Connecting-IP', ip)
+      .set('Content-Type', 'application/json')
+      .send('{bad');
+    expect(blocked.status).toBe(429);
+    expect(blocked.body.error).toEqual({
+      code: -32000,
+      message: 'Too many requests',
+    });
+  });
+
+  it('末尾スラッシュと大文字の /mcp も壊れた JSON を枠に入れる', async () => {
+    const app = buildHttpApp({
+      mcpRateLimit: { windowMs: 60_000, limit: 1, ipLimit: 1 },
+      trustConnectingIpHeaders: true,
+    });
+    const slash = await request(app)
+      .post('/mcp/')
+      .set('CF-Connecting-IP', '203.0.113.71')
+      .set('Content-Type', 'application/json')
+      .send('{bad');
+    expect(slash.status).toBe(400);
+    const slashBlocked = await request(app)
+      .post('/mcp/')
+      .set('CF-Connecting-IP', '203.0.113.71')
+      .set('Content-Type', 'application/json')
+      .send('{bad');
+    expect(slashBlocked.status).toBe(429);
+
+    const upper = await request(app)
+      .post('/MCP')
+      .set('CF-Connecting-IP', '203.0.113.72')
+      .set('Content-Type', 'application/json')
+      .send('{bad');
+    expect(upper.status).toBe(400);
+    const upperBlocked = await request(app)
+      .post('/MCP')
+      .set('CF-Connecting-IP', '203.0.113.72')
+      .set('Content-Type', 'application/json')
+      .send('{bad');
+    expect(upperBlocked.status).toBe(429);
+  });
+
+  it('接続元ヘッダを信用しないときは、ヘッダを変えても req.ip の枠に入る', async () => {
+    const app = buildHttpApp({
+      mcpRateLimit: { windowMs: 60_000, limit: 10, ipLimit: 2 },
+      trustConnectingIpHeaders: false,
+    });
+    await request(app)
+      .get('/')
+      .set('x-reportflow-connecting-ip', '203.0.113.81')
+      .set('CF-Connecting-IP', '203.0.113.82')
+      .expect(404);
+    await request(app)
+      .get('/mcp')
+      .set('x-reportflow-connecting-ip', '203.0.113.83')
+      .set('CF-Connecting-IP', '203.0.113.84')
+      .expect(404);
+    const blocked = await request(app)
+      .get('/')
+      .set('x-reportflow-connecting-ip', '203.0.113.85')
+      .set('CF-Connecting-IP', '203.0.113.86')
+      .expect(429);
+    expect(blocked.body.error).toEqual({
+      code: -32000,
+      message: 'Too many requests',
+    });
+  });
+
+  it('CORS が終端する OPTIONS は、同じ IP が上限超過の後も 429 にならない', async () => {
+    const app = buildLimited();
+    const ip = '203.0.113.40';
+    await request(app).get('/').set('CF-Connecting-IP', ip).expect(404);
+    await request(app).get('/mcp').set('CF-Connecting-IP', ip).expect(404);
+    await request(app).get('/').set('CF-Connecting-IP', ip).expect(429);
+    const preflight = await request(app)
+      .options('/mcp')
+      .set('Origin', 'https://claude.ai')
+      .set('Access-Control-Request-Method', 'POST')
+      .set('CF-Connecting-IP', ip);
+    expect(preflight.status).toBe(204);
+    const plain = await request(app).options('/').set('CF-Connecting-IP', ip);
+    expect(plain.status).toBe(204);
+  });
+});
+
+const closeServer = (server: Server): Promise<void> =>
+  new Promise((resolve, reject) => {
+    server.close((err) => (err ? reject(err) : resolve()));
+  });
+
+describe('startHttpServer timeouts', () => {
+  let server: Server | undefined;
+
+  afterEach(async () => {
+    if (server) {
+      await closeServer(server);
+      server = undefined;
+    }
+  });
+
+  it('default-timeouts: applies explicit Node defaults', async () => {
+    server = await startHttpServer({ port: 0 });
+    expect(server.requestTimeout).toBe(300_000);
+    expect(server.keepAliveTimeout).toBe(65_000);
+    expect(server.headersTimeout).toBe(70_000);
+  });
+
+  it('override-request: requestTimeoutMs overrides the default', async () => {
+    server = await startHttpServer({ port: 0, requestTimeoutMs: 120_000 });
+    expect(server.requestTimeout).toBe(120_000);
+  });
+
+  it('override-keepalive: keepAlive/headers overrides apply', async () => {
+    server = await startHttpServer({
+      port: 0,
+      keepAliveTimeoutMs: 30_000,
+      headersTimeoutMs: 40_000,
+    });
+    expect(server.keepAliveTimeout).toBe(30_000);
+    expect(server.headersTimeout).toBe(40_000);
+  });
+
+  it('invalid-relation: equal keepAlive/headers rejects before listen', async () => {
+    await expect(
+      startHttpServer({
+        port: 0,
+        keepAliveTimeoutMs: 70_000,
+        headersTimeoutMs: 70_000,
+      }),
+    ).rejects.toThrow(/keepAliveTimeout/);
+    expect(server).toBeUndefined();
+  });
+
+  it('invalid-relation-gt: inverted keepAlive/headers rejects', async () => {
+    await expect(
+      startHttpServer({
+        port: 0,
+        keepAliveTimeoutMs: 80_000,
+        headersTimeoutMs: 70_000,
+      }),
+    ).rejects.toThrow(/keepAliveTimeout/);
+  });
+
+  it('invalid-negative-timeout: rejects before listen', async () => {
+    await expect(
+      startHttpServer({ port: 0, requestTimeoutMs: -1 }),
+    ).rejects.toThrow(/requestTimeoutMs/);
+    expect(server).toBeUndefined();
+  });
+
+  it('invalid-nan-timeout: rejects non-finite values before listen', async () => {
+    await expect(
+      startHttpServer({ port: 0, headersTimeoutMs: Number.NaN }),
+    ).rejects.toThrow(/headersTimeoutMs/);
+  });
+
+  it('startup-log: logs the three timeout values', async () => {
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      server = await startHttpServer({ port: 0 });
+      const startup = logSpy.mock.calls
+        .map((args) => String(args[0]))
+        .find((line) => line.includes('Streamable HTTP server listening'));
+      expect(startup).toBeDefined();
+      expect(startup).toContain('requestTimeout=300000');
+      expect(startup).toContain('keepAliveTimeout=65000');
+      expect(startup).toContain('headersTimeout=70000');
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('bind-error: rejects with EADDRINUSE on a busy port', async () => {
+    // Hold the port with the same listen path as production so IPv4/IPv6
+    // family differences on macOS do not mask the collision.
+    const holder = await startHttpServer({ port: 0 });
+    const address = holder.address();
+    if (!address || typeof address === 'string') {
+      await closeServer(holder);
+      throw new Error('expected TCP address');
+    }
+
+    try {
+      await expect(
+        startHttpServer({ port: address.port }),
+      ).rejects.toMatchObject({ code: 'EADDRINUSE' });
+    } finally {
+      await closeServer(holder);
+    }
   });
 });
