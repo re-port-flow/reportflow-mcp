@@ -97,6 +97,8 @@ describe('handleSuggestParams', () => {
     expect(prompt).toContain('"description"');
     // パラメータ名が "description" でも正当な出力キーとして扱う旨（メタデータ注釈との曖昧さ回避）。
     expect(prompt).toContain('"name" の値が "description"');
+    // label は表示名（PRJ-3-1878）。日本語の表示名を出力キーにしない旨
+    expect(prompt).toContain('"label" は画面に出す表示名');
   });
 
   it('self-corrects once when first sample is unparseable', async () => {

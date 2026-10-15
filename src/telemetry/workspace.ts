@@ -89,3 +89,22 @@ export const resolveInvocationWorkspaceId = (
   if (httpCtx) return decodeJwtPayload(httpCtx.accessToken)?.workspace_id;
   return slot.workspaceId;
 };
+
+/**
+ * **ハンドラの中から**、いま実行中の呼び出しの帰属先を読む
+ * (`integration.mcp.connected` のように、ハンドラ自身が追加のイベントを出す場合)。
+ *
+ * 上の `resolveInvocationWorkspaceId` と同じ規則を使う。**保存済み資格情報を
+ * 読み直す (`getAuthWorkspaceId()`) 代わりにこれを使うこと**: あちらはプロセス
+ * 全体の状態なので、並行する `authenticate force=true` が別ワークスペースを保存
+ * した瞬間に別の呼び出しの帰属先を書き換え得る — この設計が消したはずの競合
+ * (PRJ-3-1117) をイベント 1 つ分だけ復活させることになる。加えて file / keychain
+ * I/O が入り、「解決は同期・I/O 無し」という規則も崩れる。
+ *
+ * 呼び出しスコープの外では undefined (`recordCredentialWorkspace` が
+ * スコープ外で何もしないのと同じ。帰属先が無いのが正しい)。
+ */
+export const getInvocationWorkspaceId = (): string | undefined => {
+  const slot = invocationStorage.getStore();
+  return slot ? resolveInvocationWorkspaceId(slot) : undefined;
+};

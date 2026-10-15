@@ -1,6 +1,7 @@
 import { runWithHttpAuth } from '../auth-context.js';
 import type { TelemetryClient, TelemetryEvent } from './client.js';
 import { withTelemetry } from './interceptor.js';
+import { recordUpstreamFailure, recordUpstreamRequest } from './upstream.js';
 import { recordCredentialWorkspace } from './workspace.js';
 
 class RecordingClient implements TelemetryClient {
@@ -71,6 +72,23 @@ describe('withTelemetry', () => {
     await expect(wrapped({})).rejects.toThrow('nope');
     expect(client.events[0].properties?.success).toBe(false);
     expect(client.events[0].properties?.errorClass).toBe('TypeError');
+  });
+
+  // Error でも文字列でもない値を throw する経路。クラス名を名乗れないので
+  // `'Error'` に落ちる (テレメトリへ任意の値を流さないため)。
+  it('falls back to Error for thrown values that are not Errors', async () => {
+    const client = new RecordingClient();
+    const wrapped = withTelemetry(
+      client,
+      'list_templates',
+      async () => {
+        throw { code: 1 };
+      },
+      noWorkspace,
+    );
+
+    await expect(wrapped({})).rejects.toEqual({ code: 1 });
+    expect(client.events[0].properties?.errorClass).toBe('Error');
   });
 
   it('omits workspaceId when the auth context provides none', async () => {
@@ -307,5 +325,279 @@ describe('withTelemetry — 資格情報からの帰属 (既定の resolver)', (
     );
     expect(byTool.get('tool_a')).toBe('ws-A');
     expect(byTool.get('tool_b')).toBe('ws-B');
+  });
+
+  // 月次コホート集計 (developer-docs `Notion「MCP コホート月次集計」(https://app.notion.com/p/3bc2873e44e4813d899ed7eb74e1f3d4)`
+  // §3.2 / §6.3) がこの properties の形をそのまま前提にしている。ギャラリー需要
+  // テレメトリ (PRJ-3-1350) で新イベントを足したときに、こちらへキーが混ざって
+  // いないことを固定する。
+  //
+  // 仕様変更: 失敗イベントに上流の観測値を足した (`upstreamFailureCount` は常に、
+  // `lastUpstream*` は観測できたときだけ)。コホート分類は `tool` / `success` /
+  // `success=true` の行しか見ないので追加は影響しない。**成功側のキーは
+  // 増やさない** —— この期待値がその保証。
+  it('回帰: integration.mcp.invoked の properties キーが増減していない', async () => {
+    const client = new RecordingClient();
+
+    await withTelemetry(
+      client,
+      'search_gallery_templates',
+      ok,
+      noWorkspace,
+    )({});
+    expect(Object.keys(client.events[0].properties ?? {}).sort()).toEqual([
+      'durationMs',
+      'success',
+      'tool',
+    ]);
+
+    await withTelemetry(
+      client,
+      'search_gallery_templates',
+      async () => ({
+        isError: true as const,
+        content: [{ type: 'text' as const, text: 'boom' }],
+      }),
+      noWorkspace,
+    )({});
+    expect(Object.keys(client.events[1].properties ?? {}).sort()).toEqual([
+      'durationMs',
+      'errorClass',
+      'success',
+      'tool',
+      'upstreamFailureCount',
+      'upstreamRequestCount',
+    ]);
+  });
+});
+
+// 失敗理由の記録 (`upstream.ts`)。実測 (Cloudflare Analytics Engine /
+// 2026-07-18〜08-17) で `copy_gallery_template` が 8 回中 4 回失敗していたが、
+// `errorClass: 'ToolError'` しか残らず理由が 1 件も分からなかったための追加。
+describe('withTelemetry — 失敗理由 (上流の観測値)', () => {
+  const failing = async () => ({
+    isError: true as const,
+    content: [{ type: 'text' as const, text: 'エラー: …' }],
+  });
+
+  it('観測できた上流のステータスを失敗イベントに載せる', async () => {
+    const client = new RecordingClient();
+    const wrapped = withTelemetry(
+      client,
+      'copy_gallery_template',
+      async () => {
+        recordUpstreamFailure({ status: 403, errorClass: 'HttpError' });
+        return failing();
+      },
+      noWorkspace,
+    );
+
+    await wrapped({});
+
+    expect(client.events[0].properties?.success).toBe(false);
+    expect(client.events[0].properties?.lastUpstreamStatus).toBe(403);
+    expect(client.events[0].properties?.lastUpstreamErrorClass).toBe(
+      'HttpError',
+    );
+    expect(client.events[0].properties?.upstreamFailureCount).toBe(1);
+  });
+
+  // 「ステータスが取れなかった」と「ステータスが 0 だった」を混同させない。
+  it('応答が返らなかった上流失敗には lastUpstreamStatus を載せない', async () => {
+    const client = new RecordingClient();
+    const wrapped = withTelemetry(
+      client,
+      'copy_gallery_template',
+      async () => {
+        recordUpstreamFailure({ errorClass: 'TypeError' });
+        return failing();
+      },
+      noWorkspace,
+    );
+
+    await wrapped({});
+
+    expect(client.events[0].properties?.lastUpstreamErrorClass).toBe(
+      'TypeError',
+    );
+    expect('lastUpstreamStatus' in (client.events[0].properties ?? {})).toBe(
+      false,
+    );
+    expect(client.events[0].properties?.upstreamFailureCount).toBe(1);
+  });
+
+  // 0 は「観測しなかった」。キーが無い状態（この計測を持たない古いビルド）と
+  // 区別できる必要があるので、0 でも必ず載せる。
+  it('上流エラーを観測しなかった失敗は件数 0 を載せる', async () => {
+    const client = new RecordingClient();
+    const wrapped = withTelemetry(
+      client,
+      'suggest_params',
+      failing,
+      noWorkspace,
+    );
+
+    await wrapped({});
+
+    expect(client.events[0].properties?.upstreamRequestCount).toBe(0);
+    expect(client.events[0].properties?.upstreamFailureCount).toBe(0);
+    expect(client.events[0].properties?.lastUpstreamErrorClass).toBeUndefined();
+    expect(client.events[0].properties?.lastUpstreamStatus).toBeUndefined();
+  });
+
+  // 「上流を一度も呼ばずに失敗した」と「上流は応答したがツールが応答内容を
+  // 拒否した」を、失敗件数 0 のまま区別できるようにする。
+  it('上流が応答したのにツールが失敗した場合はリクエスト本数で区別できる', async () => {
+    const client = new RecordingClient();
+    const wrapped = withTelemetry(
+      client,
+      'copy_gallery_template',
+      async () => {
+        recordUpstreamRequest();
+        recordUpstreamRequest();
+        return failing();
+      },
+      noWorkspace,
+    );
+
+    await wrapped({});
+
+    expect(client.events[0].properties?.upstreamRequestCount).toBe(2);
+    expect(client.events[0].properties?.upstreamFailureCount).toBe(0);
+  });
+
+  // 401 → refresh → 再送で成功する経路。回復した呼び出しの成功行に失敗の痕跡を
+  // 残さない。
+  it('成功イベントには載せない (上流エラーから回復した場合も)', async () => {
+    const client = new RecordingClient();
+    const wrapped = withTelemetry(
+      client,
+      'generate_pdf_sync',
+      async () => {
+        recordUpstreamFailure({ status: 401, errorClass: 'HttpError' });
+        return { content: [{ type: 'text' as const, text: 'ok' }] };
+      },
+      noWorkspace,
+    );
+
+    await wrapped({});
+
+    expect(client.events[0].properties?.success).toBe(true);
+    expect(client.events[0].properties?.upstreamFailureCount).toBeUndefined();
+    expect(client.events[0].properties?.lastUpstreamErrorClass).toBeUndefined();
+    expect(client.events[0].properties?.lastUpstreamStatus).toBeUndefined();
+  });
+
+  // 「回復してから別の理由で失敗した」呼び出し。最後の 1 件は**原因ではない**
+  // ので、件数を併記して最後の 1 件だけを読ませない。
+  it('複数観測したら件数を数え、最後に観測した 1 件を載せる', async () => {
+    const client = new RecordingClient();
+    const wrapped = withTelemetry(
+      client,
+      'copy_gallery_template',
+      async () => {
+        recordUpstreamFailure({ status: 401, errorClass: 'HttpError' });
+        recordUpstreamFailure({ status: 500, errorClass: 'HttpError' });
+        return failing();
+      },
+      noWorkspace,
+    );
+
+    await wrapped({});
+
+    expect(client.events[0].properties?.upstreamFailureCount).toBe(2);
+    expect(client.events[0].properties?.lastUpstreamStatus).toBe(500);
+  });
+
+  it('throw した失敗にも載せる', async () => {
+    const client = new RecordingClient();
+    const wrapped = withTelemetry(
+      client,
+      'copy_gallery_template',
+      async () => {
+        recordUpstreamFailure({ status: 502, errorClass: 'HttpError' });
+        throw new TypeError('boom');
+      },
+      noWorkspace,
+    );
+
+    await expect(wrapped({})).rejects.toThrow('boom');
+    expect(client.events[0].properties?.errorClass).toBe('TypeError');
+    expect(client.events[0].properties?.lastUpstreamStatus).toBe(502);
+    expect(client.events[0].properties?.upstreamFailureCount).toBe(1);
+  });
+
+  // PRJ-3-1117 の保証が壊れていないこと。**失敗イベントに帰属を足さずに理由だけ
+  // 足す**のがこの変更の要点なので、両方を 1 つのテストで固定する。
+  it('失敗イベントに workspaceId は付かない (理由を足しても)', async () => {
+    const client = new RecordingClient();
+    const wrapped = withTelemetry(
+      client,
+      'copy_gallery_template',
+      async () => {
+        recordUpstreamFailure({ status: 429, errorClass: 'HttpError' });
+        return failing();
+      },
+      () => '0eLHZZ8PxpU4Z5r7',
+    );
+
+    await wrapped({});
+
+    expect(client.events[0].workspaceId).toBeUndefined();
+    expect(client.events[0].properties?.lastUpstreamStatus).toBe(429);
+  });
+
+  it('並行呼び出しの観測値が互いに混ざらない', async () => {
+    const client = new RecordingClient();
+
+    let releaseA = (): void => {};
+    const aCanFinish = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+
+    const toolA = withTelemetry(
+      client,
+      'tool_a',
+      async () => {
+        recordUpstreamFailure({ status: 404, errorClass: 'HttpError' });
+        await aCanFinish;
+        return failing();
+      },
+      noWorkspace,
+    );
+    const toolB = withTelemetry(
+      client,
+      'tool_b',
+      async () => {
+        recordUpstreamFailure({ status: 500, errorClass: 'HttpError' });
+        releaseA();
+        return failing();
+      },
+      noWorkspace,
+    );
+
+    const a = toolA({});
+    await toolB({});
+    await a;
+
+    const byTool = new Map(
+      client.events.map((e) => [
+        e.properties?.tool,
+        e.properties?.lastUpstreamStatus,
+      ]),
+    );
+    expect(byTool.get('tool_a')).toBe(404);
+    expect(byTool.get('tool_b')).toBe(500);
+  });
+
+  // スコープ外での記録はどのイベントにも属さないので落とす
+  // (`recordCredentialWorkspace` と同じ扱い)。
+  it('呼び出しスコープ外の記録は次の呼び出しへ漏れない', async () => {
+    const client = new RecordingClient();
+    recordUpstreamFailure({ status: 500, errorClass: 'HttpError' });
+
+    await withTelemetry(client, 'list_templates', failing, noWorkspace)({});
+
+    expect(client.events[0].properties?.upstreamFailureCount).toBe(0);
   });
 });

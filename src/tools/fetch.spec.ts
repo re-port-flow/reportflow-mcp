@@ -1,4 +1,10 @@
 import { handleFetch } from './fetch';
+import { getAppBaseUrl } from '../app-url';
+import { runWithInvocationWorkspace } from '../telemetry/workspace';
+
+/** 資格情報のワークスペースが ws-1 の呼び出しとして実行する */
+const asWs1 = <T>(fn: () => Promise<T>): Promise<T> =>
+  runWithInvocationWorkspace({ workspaceId: 'ws-1' }, fn);
 
 jest.mock('../auth', () => ({
   requestWithAuth: jest.fn((fn: (h: Record<string, string>) => unknown) =>
@@ -40,7 +46,8 @@ function routeMock(opts: { listDesignsError?: boolean } = {}) {
       });
     if (url.includes('/design/parameter/')) return ok(schema);
     if (url.includes('/v1/file/designs')) {
-      if (opts.listDesignsError) return Promise.reject(new Error('list failed'));
+      if (opts.listDesignsError)
+        return Promise.reject(new Error('list failed'));
       return ok(designs);
     }
     return Promise.reject(new Error(`unexpected url: ${url}`));
@@ -53,14 +60,16 @@ describe('handleFetch', () => {
   it('正常系: version 付き id でスキーマと解決した title を返す', async () => {
     routeMock();
 
-    const result = await handleFetch({ id: 'design-uuid-1@3' });
+    const result = await asWs1(() => handleFetch({ id: 'design-uuid-1@3' }));
 
     expect(result.isError).toBeUndefined();
     const payload = JSON.parse(result.content[0].text);
     expect(payload.id).toBe('design-uuid-1@3');
     expect(payload.title).toBe('請求書テンプレート');
+    // 仕様変更（情報設計 URL design→templates 2026-09）: 旧 https://re-port-flow.com/designs/{id}?v={version}
+    // はワークスペースが無く、どのルートにも一致しなかった。テンプレートのエディタ画面を返す。
     expect(payload.url).toBe(
-      'https://re-port-flow.com/designs/design-uuid-1?v=3',
+      `${getAppBaseUrl()}/ws-1/templates/design-uuid-1/3`,
     );
     expect(payload.metadata.parameters).toEqual(schema);
     // OpenAI MCP fetch 規約: 本文 text とスキーマ、structuredContent を返す
@@ -76,10 +85,13 @@ describe('handleFetch', () => {
   it('正常系: version 省略時は最新版（version パラメータ無し）で取得する', async () => {
     routeMock();
 
-    const result = await handleFetch({ id: 'design-uuid-1' });
+    const result = await asWs1(() => handleFetch({ id: 'design-uuid-1' }));
 
     const payload = JSON.parse(result.content[0].text);
-    expect(payload.url).toBe('https://re-port-flow.com/designs/design-uuid-1');
+    // 仕様変更（情報設計 URL design→templates 2026-09）: バージョン省略時は一覧の最新版の画面
+    expect(payload.url).toBe(
+      `${getAppBaseUrl()}/ws-1/templates/design-uuid-1/3`,
+    );
 
     const paramCall = mockFetch.mock.calls.find((c) =>
       String(c[0]).includes('/design/parameter/'),
@@ -108,5 +120,27 @@ describe('handleFetch', () => {
     expect(result.structuredContent).toEqual({
       error: { tool: 'fetch', id: 'design-uuid-1@3', message: 'Network Error' },
     });
+  });
+});
+
+describe('handleFetch の url（テンプレートの画面）', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('バージョン省略で一覧も取れないときは、推測せずテンプレート一覧を返す', async () => {
+    routeMock({ listDesignsError: true });
+
+    const result = await asWs1(() => handleFetch({ id: 'design-uuid-1' }));
+
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.url).toBe(`${getAppBaseUrl()}/ws-1/templates`);
+  });
+
+  it('資格情報のワークスペースが分からないときは、推測せずアプリのトップを返す', async () => {
+    routeMock();
+
+    const result = await handleFetch({ id: 'design-uuid-1@3' });
+
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.url).toBe(`${getAppBaseUrl()}/`);
   });
 });

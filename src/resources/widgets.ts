@@ -4,14 +4,17 @@ import {
   TEMPLATE_LIST_WIDGET_HTML,
   WIDGET_MIME_TYPE,
 } from '../widgets/template-list.js';
+import type { CapabilityToggle } from '../workspace-permission.js';
 
 /**
  * ChatGPT Apps SDK 用の widget リソースを登録する。HTTP モード (ChatGPT 経路)
  * 専用。`ui://` URI / mimeType `text/html;profile=mcp-app` で公開し、対応する
  * ツールの `_meta["openai/outputTemplate"]` から参照される。
  */
-export const registerWidgetResources = (server: McpServer): void => {
-  server.registerResource(
+export const registerWidgetResources = (
+  server: McpServer,
+): CapabilityToggle => {
+  return server.registerResource(
     'template-list-widget',
     TEMPLATE_LIST_WIDGET_URI,
     {

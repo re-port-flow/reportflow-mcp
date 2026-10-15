@@ -1,8 +1,8 @@
 {
   "name": "reportflow-mcp",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "mcpName": "io.github.re-port-flow/reportflow-mcp",
-  "description": "Re:port Flow MCP Server - PDF report generation for Claude and AI agents",
+  "description": "Re:port Flow MCP Server - PDF generation from templates for Claude and AI agents",
   "keywords": [
     "mcp",
     "pdf",
@@ -54,31 +54,32 @@
     "lint:package-scripts": "node scripts/check-package-scripts.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/node": "^2.0.0",
-    "@modelcontextprotocol/server": "^2.0.0",
+    "@modelcontextprotocol/node": "^2.1.1",
+    "@modelcontextprotocol/server": "^2.3.1",
     "@napi-rs/keyring": "^1.2.0",
     "cors": "^2.8.5",
-    "express": "^4.21.2",
+    "express": "^4.22.3",
+    "express-rate-limit": "8.7.1",
     "open": "^8.4.2",
     "zod": "^4.2.0"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
     "@eslint/js": "^9.18.0",
-    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/client": "^2.3.1",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
-    "@types/jest": "^29.5.14",
+    "@types/jest": "^30.0.0",
     "@types/node": "^22.10.7",
     "@types/supertest": "^6.0.2",
     "eslint": "^9.18.0",
     "eslint-config-prettier": "^10.0.1",
     "eslint-plugin-prettier": "^5.2.2",
     "globals": "^16.0.0",
-    "jest": "^29.7.0",
+    "jest": "^30.5.2",
     "prettier": "^3.4.2",
     "supertest": "^7.0.0",
-    "ts-jest": "^29.2.5",
+    "ts-jest": "^29.4.14",
     "ts-node": "^10.9.2",
     "typescript": "^5.7.3",
     "typescript-eslint": "^8.20.0"
@@ -86,26 +87,28 @@
   "resolutions": {
     "flatted": "^3.4.2",
     "minimatch": "^9.0.7",
-    "picomatch": "^2.3.2",
-    "brace-expansion": "^2.0.3",
+    "brace-expansion": "^2.1.7",
     "@eslint/eslintrc/ajv": "^6.14.0",
-    "js-yaml": "^4.1.1",
-    "qs": "^6.15.2",
+    "js-yaml": "^4.3.2",
+    "qs": "^6.16.0",
     "diff": "^4.0.4",
-    "@eslint/plugin-kit": "^0.3.4"
+    "@eslint/plugin-kit": "^0.3.4",
+    "proxy-addr": "^2.0.8",
+    "body-parser": "^1.20.6"
   },
   "overrides": {
     "flatted": "^3.4.2",
     "minimatch": "^9.0.7",
-    "picomatch": "^2.3.2",
-    "brace-expansion": "^2.0.3",
+    "brace-expansion": "^2.1.7",
     "@eslint/eslintrc": {
       "ajv": "^6.14.0"
     },
-    "js-yaml": "^4.1.1",
-    "qs": "^6.15.2",
+    "js-yaml": "^4.3.2",
+    "qs": "^6.16.0",
     "diff": "^4.0.4",
-    "@eslint/plugin-kit": "^0.3.4"
+    "@eslint/plugin-kit": "^0.3.4",
+    "proxy-addr": "^2.0.8",
+    "body-parser": "^1.20.6"
   },
   "jest": {
     "coverageProvider": "v8",

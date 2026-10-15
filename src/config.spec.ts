@@ -64,6 +64,9 @@ describe('config stage resolution', () => {
       expect(prm.authorization_servers).toEqual([
         'https://mcp.re-port-flow.com',
       ]);
+      // 最小権限へ縮小した（PRJ-3-1522）。designs:read / templates:read /
+      // templates:write は reposts-api・content-service のどちらでも
+      // @RequireScopes 宣言もガード検査も無く、認可に関与していなかった。
       expect(prm.scopes_supported).toEqual([
         'openid',
         'profile',
@@ -82,18 +85,28 @@ describe('config stage resolution', () => {
     jest.isolateModules(() => {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const config = require('./config') as typeof import('./config');
-      // reposts-api の `ANONYMOUS_CLIENT_SCOPES` と同じ 4 つ。ここを広げると
-      // DCR 経由のクライアントが `authorize` で 400 になる（PRJ-3-1522）。
+      // 最小権限（PRJ-3-1522）。MCP クライアントはこの広告値を読んで authorize の
+      // scope を組み立てるため、ここに載せた分がそのまま利用者へ要求される権限になる。
       expect(config.SUPPORTED_SCOPES).toEqual([
         'openid',
         'profile',
         'designs:write',
         'pdf:generate',
       ]);
-      // 要求 scope が広告集合から導かれていること（別リテラルに戻すと落ちる）
-      expect(config.SUPPORTED_SCOPE_STRING).toBe(
-        'openid profile designs:write pdf:generate',
-      );
     });
   });
+
+  // 保持していると、将来それらを要求する口が増えた時点で利用者の再同意なしに
+  // 既存トークンが到達できてしまう。広告しないことを明示的に固定する。
+  it.each(['designs:read', 'templates:read', 'templates:write'])(
+    'does not advertise the unenforced scope %s',
+    (scope) => {
+      delete process.env['NODE_ENV'];
+      jest.isolateModules(() => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const config = require('./config') as typeof import('./config');
+        expect(config.SUPPORTED_SCOPES).not.toContain(scope);
+      });
+    },
+  );
 });

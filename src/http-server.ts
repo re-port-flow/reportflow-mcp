@@ -1,12 +1,25 @@
 import express, { NextFunction, Request, Response } from 'express';
 import cors from 'cors';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
+import { isIP } from 'net';
+import { createHash, randomUUID } from 'crypto';
 import {
+  CLIENT_CAPABILITIES_META_KEY,
+  CLIENT_INFO_META_KEY,
   createMcpHandler,
   localhostAllowedHostnames,
+  PROTOCOL_VERSION_META_KEY,
   validateHostHeader,
 } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { runWithHttpAuth } from './auth-context.js';
+import { A2A_ENDPOINT_PATH, buildAgentCard } from './a2a/agent-card.js';
+import { handleA2aJsonRpc, type ToolCallOutcome } from './a2a/jsonrpc.js';
+import { interpretMcpToolResponse } from './a2a/mcp-response.js';
+import {
+  REPORTFLOW_CONNECTING_IP_HEADER,
+  TRUST_CONNECTING_IP_HEADERS,
+} from './client-ip.js';
 import {
   buildProtectedResourceMetadata,
   MCP_RESOURCE_URL,
@@ -17,7 +30,16 @@ import {
   normalizeInboundBody,
   shouldDropProtocolVersionHeader,
 } from './protocol-envelope.js';
+import {
+  callOAuthUpstream,
+  errorNameOf,
+  resolveAccessServiceAuth,
+} from './oauth-upstream.js';
 import { createMcpServer } from './server.js';
+import {
+  resolveWorkspaceAuthorization,
+  type WorkspaceAuthorization,
+} from './workspace-role.js';
 import {
   FAVICON_ICO,
   FAVICON_ICO_CONTENT_TYPE,
@@ -25,7 +47,22 @@ import {
   FAVICON_SVG_CONTENT_TYPE,
 } from './favicon.js';
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const pkg = require('../package.json') as { name: string; version: string };
+
 const DEFAULT_PORT = 3000;
+
+/**
+ * A2A の skill を MCP ハンドラへ流すときに名乗るプロトコル版。
+ * per-request `_meta` 封筒 (2026-07-28) で送り、initialize を省く。
+ */
+const A2A_INTERNAL_MCP_PROTOCOL_VERSION = '2026-07-28';
+
+/** Node 既定の requestTimeout を明示する（5 分）。短縮は別タスクで判断する。 */
+const DEFAULT_REQUEST_TIMEOUT_MS = 300_000;
+/** keepAliveTimeout < headersTimeout を守る（Node 推奨関係）。 */
+const DEFAULT_KEEP_ALIVE_TIMEOUT_MS = 65_000;
+const DEFAULT_HEADERS_TIMEOUT_MS = 70_000;
 
 /** TCP ポートの有効レンジ (1-65535)。 */
 const MAX_PORT = 65535;
@@ -182,12 +219,7 @@ const respondForbidden = (res: Response, message: string): void => {
   });
 };
 
-const PROTECTED_METHODS = new Set([
-  'tools/call',
-  'resources/read',
-  'resources/list',
-  'prompts/get',
-]);
+const PROTECTED_METHODS = new Set(['tools/call', 'prompts/get']);
 
 const wwwAuthenticateHeader = (): string =>
   `Bearer realm="reportflow-mcp", resource_metadata="${MCP_RESOURCE_URL}/.well-known/oauth-protected-resource"`;
@@ -201,6 +233,24 @@ const respondUnauthorized = (
     .status(401)
     .set('WWW-Authenticate', wwwAuthenticateHeader())
     .json({ error: errorCode, error_description: description });
+};
+
+/**
+ * OAuth proxy (`/register` / `/token`) が上流を成功として扱えなかったときの応答。
+ *
+ * **クライアントへ出すのは汎用の OAuth エラーだけ。** 分類 (`rejection`) や
+ * 上流の status・本文は出さない。claude.ai 等の外部クライアントに上流の内部
+ * 事情を伝える必要は無く、Access の HTML / ログイン URL が漏れる経路も作らない。
+ * 切り分けに要る情報は Cloudflare Workers Logs 側 (oauth-upstream.ts の `logRejection`) にある。
+ *
+ * status は既存どおり 502。`error: 'server_error'` は RFC 6749 §5.2 の値。
+ */
+const respondProxyFailure = (res: Response, description: string): void => {
+  if (res.headersSent) return;
+  res.status(502).json({
+    error: 'server_error',
+    error_description: description,
+  });
 };
 
 const extractBearer = (req: Request): string | null => {
@@ -222,14 +272,112 @@ const requestNeedsAuth = (body: unknown): boolean => {
 
 export type HttpServerOptions = {
   port?: number;
+  /** リクエスト全体の上限 (ms)。未指定時は DEFAULT_REQUEST_TIMEOUT_MS。 */
+  requestTimeoutMs?: number;
+  /** keep-alive アイドル上限 (ms)。必ず headersTimeoutMs より小さくする。 */
+  keepAliveTimeoutMs?: number;
+  /** ヘッダ受信上限 (ms)。keepAliveTimeoutMs より大きくする。 */
+  headersTimeoutMs?: number;
+} & BuildHttpAppOptions;
+
+export type BuildHttpAppOptions = {
+  /**
+   * リクエストごとのワークスペース権限解決 (PRJ-3-1584 / ST-3)。
+   * 既定は本番の resolver。テストがロールを固定するための差し替え口。
+   */
+  resolveAuthorization?: () => Promise<WorkspaceAuthorization>;
+  /**
+   * `/` と `/mcp` のレート制限 (PRJ-3-2258)。未指定時は本番の窓と上限。
+   * テストが少ない回数で 429 を踏むための差し替え口。無効化はしない。
+   */
+  mcpRateLimit?: { windowMs: number; limit: number; ipLimit: number };
+  /**
+   * 接続元ヘッダを IP のキーに使うか。未指定時は環境変数
+   * `TRUST_CONNECTING_IP_HEADERS=1` のときだけ使う。それ以外は `req.ip`。
+   */
+  trustConnectingIpHeaders?: boolean;
+};
+
+/** `/` と `/mcp` が共有する窓。プロセス内メモリなのでインスタンスをまたがない。 */
+export const MCP_HTTP_RATE_LIMIT_WINDOW_MS = 60_000;
+
+/** Bearer ごとの上限。本番の Container は最大 2 インスタンスなので実効はおおよそこの 2 倍。 */
+export const MCP_HTTP_RATE_LIMIT_MAX = 300;
+
+/**
+ * 接続元 IP の上限。Bearer の有無にかかわらず掛ける。乱数 Bearer で枠を
+ * 増やす回避と、メモリストアの際限ない増加をここで止める。共有 egress を
+ * 1 利用者の枠に潰さないため、Bearer 上限より大きい。本番トラフィックの
+ * 実測値ではない。
+ */
+export const MCP_HTTP_IP_RATE_LIMIT_MAX = 3_000;
+
+const MCP_RATE_LIMIT_BODY = {
+  jsonrpc: '2.0' as const,
+  error: { code: -32000, message: 'Too many requests' },
+  id: null,
+};
+
+/**
+ * `app.all('/')` と `app.all('/mcp')` に当たるパス。
+ * Express 4 の既定（末尾スラッシュを許容し、大文字小文字を区別しない）に合わせる。
+ */
+const isMcpRateLimitedPath = (path: string): boolean =>
+  /^\/(?:mcp)?\/?$/i.test(path);
+
+const headerValue = (value: string | string[] | undefined): string => {
+  if (Array.isArray(value)) return value[0]?.trim() ?? '';
+  return typeof value === 'string' ? value.trim() : '';
+};
+
+/**
+ * 接続元。`trustHeaders` のときだけ、Worker が写した専用ヘッダ、次に
+ * CF-Connecting-IP を見る。どちらも IP でなければ、またはヘッダを信用しない
+ * ときは req.ip。カスタム keyGenerator は既定の X-Forwarded-For 検査を
+ * 置き換えるので、trust proxy は立てない。`ipKeyGenerator` は IPv6 を /56 に
+ * まとめる (関数本体にその呼び出しが必要)。Bearer があってもこのキーは外さない。
+ */
+const mcpIpRateLimitKey =
+  (trustHeaders: boolean) =>
+  (req: Request): string => {
+    const stamped = trustHeaders
+      ? headerValue(req.headers[REPORTFLOW_CONNECTING_IP_HEADER])
+      : '';
+    const fromCloudflare = trustHeaders
+      ? headerValue(req.headers['cf-connecting-ip'])
+      : '';
+    const raw =
+      stamped.length > 0 && isIP(stamped) !== 0
+        ? stamped
+        : fromCloudflare.length > 0 && isIP(fromCloudflare) !== 0
+          ? fromCloudflare
+          : (req.ip ?? '');
+    return raw.length > 0 ? ipKeyGenerator(raw) : 'unknown';
+  };
+
+/** Bearer があるリクエストだけ追加で掛ける、トークン単位のキー。 */
+const mcpBearerRateLimitKey = (req: Request): string => {
+  const token = extractBearer(req) ?? '';
+  return `bearer:${createHash('sha256').update(token).digest('hex')}`;
 };
 
 /**
  * Express アプリケーションを構築して返す。listen は呼ばない。
  * テストや埋め込み利用を想定。
  */
-export const buildHttpApp = (): express.Express => {
+export const buildHttpApp = (
+  options: BuildHttpAppOptions = {},
+): express.Express => {
+  const resolveAuthorization =
+    options.resolveAuthorization ??
+    (() => resolveWorkspaceAuthorization('http'));
   const app = express();
+
+  // Cloudflare Access の Service Auth (staging のみ。詳細は oauth-upstream.ts)。
+  // **アプリ生成時に 1 度だけ解決する。** 片方だけ設定された状態をここで
+  // 例外にして起動を止める (fail-fast)。リクエスト毎に読むと、誰も通れない
+  // 設定のままサーバーが上がり、「設定したのに直らない」で時間を失う。
+  const accessServiceAuth = resolveAccessServiceAuth();
 
   // Host / Origin 検証 (MCP spec §Security)。MCP エンドポイント ('/mcp' と
   // ルート '/') に限定した route-scoped guard として、CORS / body パースより
@@ -239,7 +387,7 @@ export const buildHttpApp = (): express.Express => {
   //   リクエストに検証が届かない。spec は "all incoming connections" の検証を
   //   要求しており、MCP エンドポイントの全メソッド・全 body 状態で
   //   「不正 Host / invalid Origin → 403」を一貫させる。
-  // - 適用外 (guard を通さないパス): /healthz は ALB ヘルスチェックがターゲット
+  // - 適用外 (guard を通さないパス): /healthz は Container/プロキシのヘルスチェックがターゲット
   //   IP:port を Host に載せてくるため適用外**必須**。favicon / .well-known
   //   (PRM・AS metadata・openai-apps-challenge) は公開メタデータで rebinding と
   //   無関係のため適用外。OAuth proxy (/authorize /token /register) は
@@ -268,6 +416,9 @@ export const buildHttpApp = (): express.Express => {
   };
   app.all('/mcp', mcpEndpointGuard);
   app.all('/', mcpEndpointGuard);
+  // A2A も Bearer で skill を実行するエンドポイントなので、MCP と同じ
+  // Host / Origin 検証を CORS / body パースより前に掛ける。
+  app.all(A2A_ENDPOINT_PATH, mcpEndpointGuard);
 
   app.use(
     cors({
@@ -285,10 +436,47 @@ export const buildHttpApp = (): express.Express => {
         // 旧仕様クライアント互換 (2025-era のセッション / SSE resumability 用)。
         'Mcp-Session-Id',
         'Last-Event-ID',
+        // A2A の service parameter (A2A v1.0 §3.2.6 / §9.2)。JSON-RPC binding では
+        // HTTP ヘッダーで送られるので、ブラウザ発 A2A クライアントの preflight に要る。
+        'A2A-Version',
+        'A2A-Extensions',
       ],
     }),
   );
-  app.use(express.json({ limit: '4mb' }));
+  // `/` と `/mcp` はここでは読まない。同じ parser をレート制限の後段に置く。
+  // 先に読むと、上限超過でも最大 4mb を JSON.parse し、壊れた JSON は
+  // next(err) で制限ミドルウェアを飛ばすためカウンタに入らない。
+  // Express 4 の既定は strict: false・caseSensitive: false なので、
+  // ルートは `/mcp/` と `/MCP` にも当たる。スキップも同じ規則にする。
+  const mcpJson = express.json({ limit: '4mb' });
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    if (isMcpRateLimitedPath(req.path)) {
+      next();
+      return;
+    }
+    mcpJson(req, res, next);
+  });
+  // A2A (JSON-RPC binding) では壊れた JSON を JSON-RPC の Parse error (-32700) で
+  // 返す。express.json の既定は HTML の 400 で、A2A クライアントが解釈できない。
+  // /mcp 側の挙動は変えない (この path だけに掛ける)。
+  app.use(
+    A2A_ENDPOINT_PATH,
+    (err: unknown, _req: Request, res: Response, next: NextFunction): void => {
+      if (
+        typeof err === 'object' &&
+        err !== null &&
+        (err as { type?: unknown }).type === 'entity.parse.failed'
+      ) {
+        res.status(400).json({
+          jsonrpc: '2.0',
+          id: null,
+          error: { code: -32700, message: 'Invalid JSON payload' },
+        });
+        return;
+      }
+      next(err);
+    },
+  );
 
   app.get('/healthz', (_req: Request, res: Response) => {
     res.json({ status: 'ok' });
@@ -320,11 +508,23 @@ export const buildHttpApp = (): express.Express => {
     },
   );
 
+  // A2A Agent Card (A2A v1.0 §8.2。IANA 登録の well-known URI)。
+  // 公開メタデータなので Host 検証の対象外 (PRM と同じ扱い)。
+  app.get('/.well-known/agent-card.json', (_req: Request, res: Response) => {
+    res.set('Cache-Control', 'public, max-age=3600').json(
+      buildAgentCard({
+        resourceUrl: MCP_RESOURCE_URL,
+        version: pkg.version,
+        scopes: SUPPORTED_SCOPES,
+      }),
+    );
+  });
+
   // ─── ChatGPT Apps (OpenAI Apps SDK) ドメイン所有確認 ──────────────────────
   // App 申請時、OpenAI は GET /.well-known/openai-apps-challenge を叩き、
   // 返ってくる検証トークン (plain text) でドメイン所有を確認する。
   // トークンは OpenAI のデベロッパーダッシュボードで発行され、デプロイ環境
-  // (ECS Task Definition) で OPENAI_APPS_CHALLENGE_TOKEN として渡す。
+  // (Cloudflare Worker Secret) で OPENAI_APPS_CHALLENGE_TOKEN として渡す。
   // - 設定あり: 200 + text/plain で **トークンそのまま** を返す (JSON/HTML 不可)
   // - 設定なし: 404 (従来どおり) を返し、誤って空ボディで検証を通さない
   // NOTE: MCP server URL が subpath (/mcp) を含んでいても、OpenAI の検証は
@@ -432,32 +632,53 @@ export const buildHttpApp = (): express.Express => {
       const authorization = req.get('Authorization');
 
       const handle = async (): Promise<void> => {
-        const upstreamRes = await fetch(upstream.toString(), {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(authorization ? { Authorization: authorization } : {}),
-          },
+        const result = await callOAuthUpstream({
+          endpoint: 'token',
+          url: upstream.toString(),
           body: JSON.stringify(jsonBody),
+          // RFC 6749 §5.1: 成功応答は `access_token` を必ず含む。Access の
+          // ログイン HTML・空 body・redirect 後の 200 はこれを持てない。
+          //
+          // **`token_type` は必須にしない。** 同じ上流エンドポイントを stdio 経路が
+          // 消費している `auth.ts` の `TokenResponse` は
+          // `{ access_token, refresh_token?, expires_in, scope? }` で
+          // **`token_type` を持たない**。必須にすると成功した token 交換を
+          // 全部 502 にしてしまう（直すつもりの P1 を別原因で再発させる）。
+          requiredField: 'access_token',
+          headers: authorization ? { Authorization: authorization } : {},
+          accessAuth: accessServiceAuth,
         });
-        const text = await upstreamRes.text();
+
+        if (!result.ok) {
+          respondProxyFailure(res, 'OAuth token proxy failed');
+          return;
+        }
+
+        // **Content-Type は上流から写さず `application/json` を明示する。**
+        // ここへ来る body は JSON として読めたものだけ (oauth-upstream.ts が
+        // 検査済み)。上流の Content-Type を写すと、`text/html` を名乗る
+        // 応答をそのままクライアントへ渡す経路が残ってしまう。
+        //
+        // **`Cache-Control: no-store` は必須** (RFC 6749 §5.1: token を含む応答に
+        // MUST)。ヘッダーを自前で組み立てるようになった以上、上流の
+        // `Cache-Control` は写らないので、ここで明示しないと `access_token` が
+        // キャッシュ制御なしでクライアント側の中間層へ届く。`Pragma: no-cache`
+        // も同§が指定する (HTTP/1.0 の中間層向け)。
         res
-          .status(upstreamRes.status)
-          .set(
-            'Content-Type',
-            upstreamRes.headers.get('content-type') ?? 'application/json',
-          )
-          .send(text);
+          .status(result.status)
+          .set('Content-Type', 'application/json')
+          .set('Cache-Control', 'no-store')
+          .set('Pragma', 'no-cache')
+          .send(result.body);
       };
 
       handle().catch((err: unknown) => {
-        console.error('OAuth token proxy failed:', err);
-        if (!res.headersSent) {
-          res.status(502).json({
-            error: 'server_error',
-            error_description: 'OAuth token proxy failed',
-          });
-        }
+        // callOAuthUpstream は上流の失敗を戻り値で返すので、ここへ来るのは
+        // 応答の書き出し等の予期しない失敗だけ。値を出さずに 502 で閉じる。
+        console.error(
+          `[reportflow-mcp] oauth-proxy token handler failed: ${errorNameOf(err)}`,
+        );
+        respondProxyFailure(res, 'OAuth token proxy failed');
       });
     },
   );
@@ -469,30 +690,40 @@ export const buildHttpApp = (): express.Express => {
     const upstream = new URL(`${REPORTFLOW_OAUTH_ISSUER_URL}/oauth/register`);
 
     const handle = async (): Promise<void> => {
-      const upstreamRes = await fetch(upstream.toString(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const result = await callOAuthUpstream({
+        endpoint: 'register',
+        url: upstream.toString(),
         body: JSON.stringify((req.body as Record<string, unknown>) ?? {}),
+        // RFC 7591 §3.2.1: 登録成功応答は `client_id` を必ず含む。これが
+        // 「Access のログイン HTML を DCR JSON と解釈できない」の検出点。
+        requiredField: 'client_id',
+        accessAuth: accessServiceAuth,
       });
-      const text = await upstreamRes.text();
+
+      if (!result.ok) {
+        respondProxyFailure(res, 'OAuth register proxy failed');
+        return;
+      }
+
+      // Content-Type を上流から写さない理由は /token 側と同じ。
+      //
+      // **`no-cache` から `no-store` へ変えた。** DCR の成功応答は
+      // `client_secret` / `registration_access_token` を含み得る
+      // (RFC 7591 §3.2.1)。`no-cache` は「使う前に再検証せよ」であって
+      // **保存自体は許す**ので、資格情報を含む応答には足りない。
       res
-        .status(upstreamRes.status)
-        .set(
-          'Content-Type',
-          upstreamRes.headers.get('content-type') ?? 'application/json',
-        )
-        .set('Cache-Control', 'no-cache')
-        .send(text);
+        .status(result.status)
+        .set('Content-Type', 'application/json')
+        .set('Cache-Control', 'no-store')
+        .set('Pragma', 'no-cache')
+        .send(result.body);
     };
 
     handle().catch((err: unknown) => {
-      console.error('OAuth register proxy failed:', err);
-      if (!res.headersSent) {
-        res.status(502).json({
-          error: 'server_error',
-          error_description: 'OAuth register proxy failed',
-        });
-      }
+      console.error(
+        `[reportflow-mcp] oauth-proxy register handler failed: ${errorNameOf(err)}`,
+      );
+      respondProxyFailure(res, 'OAuth register proxy failed');
     });
   });
 
@@ -508,17 +739,136 @@ export const buildHttpApp = (): express.Express => {
   // URL のクエリから判定する (ステートレス構成では全 POST に同じクエリが乗るため
   // 判定が安定する)。
   const mcpHandler = createMcpHandler(
-    (ctx) => {
+    async (ctx) => {
       const enableWidgets =
         ctx.requestInfo != null &&
         new URL(ctx.requestInfo.url).searchParams.get('widgets') === '1';
-      return createMcpServer({ mode: 'http', enableWidgets });
+      // ワークスペース権限をリクエスト単位で解決する (PRJ-3-1584 / ST-3)。
+      //
+      // factory は `runWithHttpAuth` の AsyncLocalStorage スコープの内側で
+      // 呼ばれるので、`resolveWorkspaceAuthorization()` はこのリクエストの
+      // Bearer を見る。**stateless な per-request 構成だからこそ**、ここで
+      // 解決すれば `tools/list` は常に「今のロール」で組み立てられる
+      // (接続時に固定されない = 降格・除籍が次のリクエストで反映される)。
+      //
+      // Bearer が無いリクエスト (未認証の `tools/list` 等) では解決は
+      // `unauthenticated` に落ち、公開ギャラリーツールと静的リソースだけが
+      // 見える (ST-1 判断3)。解決結果は 60 秒キャッシュされるため、
+      // 1 セッション中に上流へ大量の問い合わせが飛ぶことはない。
+      const { capabilities } = await resolveAuthorization();
+      return createMcpServer({
+        mode: 'http',
+        enableWidgets,
+        capabilities,
+        resolveAuthorization,
+      });
     },
     {
       onerror: (err: Error) => console.error('MCP handler error:', err),
     },
   );
   const nodeMcpHandler = toNodeHandler(mcpHandler);
+
+  // ─── A2A (Agent2Agent) JSON-RPC binding ───────────────────────────────────
+  // skill は MCP ツールそのもの (src/a2a/skills.ts)。ここでは A2A の
+  // SendMessage を **同じプロセスの MCP ハンドラ** へ `tools/call` として流す。
+  // 認可 (Bearer → runWithHttpAuth)・ワークスペース権限 (factory の
+  // resolveAuthorization)・ツールのガードとテレメトリが MCP クライアントと
+  // 完全に同じ経路になり、A2A 専用の実装を二重に持たない。
+  const callToolViaMcp = async (
+    name: string,
+    args: Record<string, unknown>,
+    token: string,
+  ): Promise<ToolCallOutcome> => {
+    const body = {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name,
+        arguments: args,
+        _meta: {
+          [PROTOCOL_VERSION_META_KEY]: A2A_INTERNAL_MCP_PROTOCOL_VERSION,
+          [CLIENT_CAPABILITIES_META_KEY]: {},
+          [CLIENT_INFO_META_KEY]: {
+            name: 'reportflow-a2a',
+            version: pkg.version,
+          },
+        },
+      },
+    };
+    const mcpRequest = new globalThis.Request(`${MCP_RESOURCE_URL}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        Authorization: `Bearer ${token}`,
+        'MCP-Protocol-Version': A2A_INTERNAL_MCP_PROTOCOL_VERSION,
+        'Mcp-Method': 'tools/call',
+        'Mcp-Name': name,
+      },
+      body: JSON.stringify(body),
+    });
+    // 上流がトークンを拒否した (期限切れ・失効・不正) 場合は 401 にする。
+    // MCP 経路は Bearer の有無しか見ず、拒否されたトークンは公開ツールだけの
+    // 一覧へ落ちるので、そのまま流すと「ツールが無い」FAILED になり、A2A
+    // クライアントがトークンを更新するきっかけ (WWW-Authenticate) を失う。
+    // 解決結果は 60 秒キャッシュされ、直後の factory 呼び出しでも再利用される。
+    const { resolution } = await runWithHttpAuth(
+      { accessToken: token },
+      resolveAuthorization,
+    );
+    if (resolution.status === 'unauthenticated') {
+      return { kind: 'unauthorized' };
+    }
+    const mcpResponse = await runWithHttpAuth({ accessToken: token }, () =>
+      mcpHandler.fetch(mcpRequest, { parsedBody: body }),
+    );
+    return interpretMcpToolResponse(
+      mcpResponse.status,
+      mcpResponse.headers.get('content-type'),
+      await mcpResponse.text(),
+    );
+  };
+
+  app.post(A2A_ENDPOINT_PATH, (req: Request, res: Response) => {
+    const token = extractBearer(req);
+    const versionHeader = req.get('A2A-Version');
+    handleA2aJsonRpc(
+      req.body,
+      { versionHeader, hasBearer: token !== null },
+      {
+        // hasBearer=false のときは handleA2aJsonRpc が callTool の前に 401 を返す。
+        callTool: (name, args) => callToolViaMcp(name, args, token ?? ''),
+        newId: randomUUID,
+        now: () => new Date(),
+      },
+    )
+      .then((result) => {
+        if (result.kind === 'unauthorized') {
+          respondUnauthorized(res, result.description);
+          return;
+        }
+        res.status(200).json(result.body);
+      })
+      .catch((err: unknown) => {
+        console.error(
+          `[reportflow-mcp] A2A request handling failed: ${errorNameOf(err)}`,
+        );
+        if (!res.headersSent) {
+          res.status(500).json({
+            jsonrpc: '2.0',
+            error: { code: -32603, message: 'Internal error' },
+            id: null,
+          });
+        }
+      });
+  });
+  // JSON-RPC binding は POST だけ。それ以外は 405 で明示する (404 だと
+  // 「エンドポイントが無い」と区別できない)。
+  app.all(A2A_ENDPOINT_PATH, (_req: Request, res: Response) => {
+    res.status(405).set('Allow', 'POST').json({ error: 'method_not_allowed' });
+  });
 
   // MCP Streamable HTTP ハンドラ。'/mcp' と '/' の両方に登録する。
   // PRM が広告する resource はルート (https://mcp.re-port-flow.com) であり、
@@ -597,8 +947,39 @@ export const buildHttpApp = (): express.Express => {
       }
     });
   };
-  app.all('/mcp', handleMcp);
-  app.all('/', handleMcp);
+  // CodeQL js/missing-rate-limiting は express-rate-limit の rateLimit() の
+  // 戻りを、そのルートのミドルウェアとして渡したときだけガードと認める。
+  // `/` を app.use で掛けると配下の全パス (healthz を含む) が対象になるため、
+  // ハンドラと同じ app.all にだけ載せる。IP の枠は常に掛け、Bearer の枠は
+  // トークンがあるときだけ追加する。`/` と `/mcp` はそれぞれの枠を共有する。
+  // JSON パーサはこの制限の後。グローバルな express.json は両パスを読まない。
+  const windowMs =
+    options.mcpRateLimit?.windowMs ?? MCP_HTTP_RATE_LIMIT_WINDOW_MS;
+  const rateLimitBody = {
+    message: MCP_RATE_LIMIT_BODY,
+    statusCode: 429,
+    legacyHeaders: false as const,
+    standardHeaders: 'draft-8' as const,
+    passOnStoreError: true,
+  };
+  const mcpIpRateLimit = rateLimit({
+    ...rateLimitBody,
+    windowMs,
+    limit: options.mcpRateLimit?.ipLimit ?? MCP_HTTP_IP_RATE_LIMIT_MAX,
+    keyGenerator: mcpIpRateLimitKey(
+      options.trustConnectingIpHeaders ??
+        process.env[TRUST_CONNECTING_IP_HEADERS] === '1',
+    ),
+  });
+  const mcpBearerRateLimit = rateLimit({
+    ...rateLimitBody,
+    windowMs,
+    limit: options.mcpRateLimit?.limit ?? MCP_HTTP_RATE_LIMIT_MAX,
+    skip: (req) => extractBearer(req) === null,
+    keyGenerator: mcpBearerRateLimitKey,
+  });
+  app.all('/mcp', mcpIpRateLimit, mcpBearerRateLimit, mcpJson, handleMcp);
+  app.all('/', mcpIpRateLimit, mcpBearerRateLimit, mcpJson, handleMcp);
 
   // 404 for any other path
   app.use((_req: Request, res: Response) => {
@@ -609,25 +990,63 @@ export const buildHttpApp = (): express.Express => {
 };
 
 /**
- * Express を listen するエントリ。Docker / ECS Fargate からの起動を想定。
+ * Express を listen するエントリ。Docker / Cloudflare Container からの起動を想定。
  * `listen` 成功 (listening イベント) または bind エラー (EADDRINUSE 等) で
  * Promise が settle する。呼び出し側でエラーハンドリング可能。
  */
 export const startHttpServer = (
   opts: HttpServerOptions = {},
-): Promise<void> => {
+): Promise<import('http').Server> => {
   const port = opts.port ?? DEFAULT_PORT;
-  const app = buildHttpApp();
+  const requestTimeout = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const keepAliveTimeout =
+    opts.keepAliveTimeoutMs ?? DEFAULT_KEEP_ALIVE_TIMEOUT_MS;
+  const headersTimeout = opts.headersTimeoutMs ?? DEFAULT_HEADERS_TIMEOUT_MS;
 
-  return new Promise<void>((resolve, reject) => {
+  // Validate before listen. Node rejects negative/non-finite timeout
+  // assignments after the server exists, and that throw can race the error
+  // listener / leave a bound handle behind.
+  for (const [name, value] of [
+    ['requestTimeoutMs', requestTimeout],
+    ['keepAliveTimeoutMs', keepAliveTimeout],
+    ['headersTimeoutMs', headersTimeout],
+  ] as const) {
+    if (!Number.isFinite(value) || value < 0) {
+      return Promise.reject(
+        new Error(
+          `${name} must be a finite number >= 0 (got ${String(value)})`,
+        ),
+      );
+    }
+  }
+
+  // Node は keepAliveTimeout < headersTimeout を推奨する。逆転・同値は
+  // keep-alive 接続でヘッダ受信中に切れるため、listen 前に落とす。
+  if (keepAliveTimeout >= headersTimeout) {
+    return Promise.reject(
+      new Error(
+        `keepAliveTimeout (${keepAliveTimeout}) must be less than headersTimeout (${headersTimeout})`,
+      ),
+    );
+  }
+
+  // **`buildHttpApp()` は Promise の中で呼ぶ。** 設定不備 (Access の 2 値の
+  // 片方だけ) は `buildHttpApp` が同期例外で落とす。ここより外で呼ぶと同期
+  // 例外のまま index-http.ts の `.catch` を通り抜け、uncaught でスタックだけが
+  // 出る。中で呼べば reject になり、既存の起動失敗ログに乗る。
+  return new Promise((resolve, reject) => {
+    const app = buildHttpApp(opts);
     const httpServer = app.listen(port);
+    httpServer.requestTimeout = requestTimeout;
+    httpServer.keepAliveTimeout = keepAliveTimeout;
+    httpServer.headersTimeout = headersTimeout;
     let settled = false;
 
     httpServer.once('listening', () => {
       if (settled) return;
       settled = true;
       console.log(
-        `[reportflow-mcp] Streamable HTTP server listening on :${port} (resource=${MCP_RESOURCE_URL})`,
+        `[reportflow-mcp] Streamable HTTP server listening on :${port} (resource=${MCP_RESOURCE_URL}; requestTimeout=${requestTimeout}; keepAliveTimeout=${keepAliveTimeout}; headersTimeout=${headersTimeout})`,
       );
 
       const shutdown = (signal: string): void => {
@@ -637,7 +1056,7 @@ export const startHttpServer = (
       process.on('SIGINT', () => shutdown('SIGINT'));
       process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-      resolve();
+      resolve(httpServer);
     });
 
     httpServer.once('error', (err: Error) => {

@@ -1,4 +1,4 @@
-import { handleGetDesignParameters } from './get-design-parameters';
+import { getDesignParametersTool, handleGetDesignParameters } from './get-design-parameters';
 
 jest.mock('../auth', () => ({
   requestWithAuth: jest.fn((fn: (h: Record<string, string>) => unknown) =>
@@ -58,5 +58,12 @@ describe('handleGetDesignParameters', () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('エラー:');
+  });
+});
+
+describe('getDesignParametersTool の説明（PRJ-3-1878）', () => {
+  it('label は表示名で、params のキーには name を使うよう明示する', () => {
+    expect(getDesignParametersTool.description).toContain('label は画面に出す表示名');
+    expect(getDesignParametersTool.description).toContain('params のキーには必ず name を使って');
   });
 });

@@ -21,6 +21,7 @@ MCP Streamable HTTP spec の Security 節 (2025-03-26 以降の各版に同文�
 | CORS credentials | `credentials: false` (Access-Control-Allow-Credentials を返さない) | `src/http-server.ts` `buildHttpApp()` |
 | Cookie | 不使用 (Set-Cookie を一切発行しない)。認証は Bearer トークンのみ | サーバー全体 |
 | 適用範囲 | MCP エンドポイント (`/mcp` とルート `/`) のみ。route-scoped guard を CORS / body パースより**前**に置き、preflight (OPTIONS) や malformed JSON を含む全メソッド・全 body 状態で 403 を一貫させる。`/healthz`・favicon・`/.well-known/*`・OAuth proxy (`/authorize` `/token` `/register`) は適用外 | `src/http-server.ts` `mcpEndpointGuard` |
+| レート制限 | **`/` と `/mcp` のみ** (PRJ-3-2258)。`express-rate-limit` のプロセス内メモリを 2 段。接続元ヘッダ（`x-reportflow-connecting-ip`、次に `CF-Connecting-IP`）を信用するのは `TRUST_CONNECTING_IP_HEADERS=1` のときだけ。本番の Worker が Container にその値を渡す。未設定の直接起動は `req.ip` だけ。信用するときは専用ヘッダが IP ならそれ、次に `CF-Connecting-IP`、どちらも IP でなければ `req.ip`。IPv6 は /56。Bearer の有無にかかわらず 60 秒あたり 3000。Bearer があるリクエストは、それに加えてトークンの SHA-256 で 60 秒あたり 300。`/` と `/mcp` は各段のカウンタを共有する。JSON の読み取りはこの制限の後（壊れた JSON も枠に入る）。OPTIONS は CORS がレート制限より前に 204 で終える。超過は HTTP 429 と JSON-RPC `code: -32000` (`Too many requests`)。`/healthz`・favicon・`/.well-known/*`・OAuth proxy・A2A は対象外。本番 Container は最大 2 インスタンスでストアを共有しないため、実効上限はおおよそ 2 倍になり得る。3000 は本番トラフィックの実測ではない。Cloudflare WAF のレート制限ルールは追加しない (http_ratelimit の entitlement 上限) | `src/http-server.ts` `buildHttpApp()` / `cloudflare/index.ts` |
 
 ## なぜ Origin を allowlist 化しないのか
 

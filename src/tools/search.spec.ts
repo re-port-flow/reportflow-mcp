@@ -1,4 +1,10 @@
 import { handleSearch } from './search';
+import { getAppBaseUrl } from '../app-url';
+import { runWithInvocationWorkspace } from '../telemetry/workspace';
+
+/** 資格情報のワークスペースが ws-1 の呼び出しとして実行する */
+const asWs1 = <T>(fn: () => Promise<T>): Promise<T> =>
+  runWithInvocationWorkspace({ workspaceId: 'ws-1' }, fn);
 
 jest.mock('../auth', () => ({
   requestWithAuth: jest.fn((fn: (h: Record<string, string>) => unknown) =>
@@ -44,14 +50,16 @@ describe('handleSearch', () => {
   it('正常系: label 部分一致でヒットを返す（id は <designId>@<version> 形式）', async () => {
     mockJsonResponse(designs);
 
-    const result = await handleSearch({ query: '請求書' });
+    const result = await asWs1(() => handleSearch({ query: '請求書' }));
 
     expect(result.isError).toBeUndefined();
     const expected = [
       {
         id: 'design-uuid-1@3',
         title: '請求書テンプレート',
-        url: 'https://re-port-flow.com/designs/design-uuid-1',
+        // 仕様変更（情報設計 URL design→templates 2026-09）: 旧 https://re-port-flow.com/designs/{id}
+        // はワークスペースが無く、どのルートにも一致しなかった。テンプレートのエディタ画面を返す。
+        url: `${getAppBaseUrl()}/ws-1/templates/design-uuid-1/3`,
       },
     ];
     const payload = JSON.parse(result.content[0].text);
@@ -110,5 +118,18 @@ describe('handleSearch', () => {
     expect(result.structuredContent).toEqual({
       error: { tool: 'search', message: 'Network Error' },
     });
+  });
+});
+
+describe('handleSearch の url（テンプレートの画面）', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('資格情報のワークスペースが分からないときは、推測せずアプリのトップを返す', async () => {
+    mockJsonResponse(designs);
+
+    const result = await handleSearch({ query: '請求書' });
+
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.results[0].url).toBe(`${getAppBaseUrl()}/`);
   });
 });

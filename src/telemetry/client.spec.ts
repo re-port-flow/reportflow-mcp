@@ -12,6 +12,31 @@ const sampleEvent: TelemetryEvent = {
 
 const okResponse = { ok: true, status: 204 } as Response;
 
+/**
+ * Builds a Response-like object carrying a **real `ReadableStream`** body.
+ *
+ * A mock that only exposes `text()` / `json()` is a shape production never
+ * produces, so it cannot detect a held connection (lesson from PR #134). The
+ * stream here behaves like the real one: `cancel()` is the only way to release
+ * it without reading.
+ */
+const streamResponse = (
+  init: { ok?: boolean; status?: number } = {},
+): {
+  res: Response;
+  cancel: jest.SpyInstance<Promise<void>, [reason?: unknown]>;
+} => {
+  const { ok = true, status = 204 } = init;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"accepted":true}'));
+      controller.close();
+    },
+  });
+  const cancel = jest.spyOn(body, 'cancel');
+  return { res: { ok, status, body } as unknown as Response, cancel };
+};
+
 describe('createTelemetryClient', () => {
   afterEach(() => {
     jest.restoreAllMocks();
@@ -59,9 +84,9 @@ describe('createTelemetryClient', () => {
     client.track(sampleEvent);
     await client.flush();
     const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
-    expect((init.headers as Record<string, string>)[TELEMETRY_SECRET_HEADER]).toBe(
-      's3cret',
-    );
+    expect(
+      (init.headers as Record<string, string>)[TELEMETRY_SECRET_HEADER],
+    ).toBe('s3cret');
   });
 
   it('warns on a non-success response but never throws', async () => {
@@ -105,6 +130,79 @@ describe('createTelemetryClient', () => {
   });
 });
 
+// PRJ-3-1582: the collector's response body is never used, so the stream has to
+// be released explicitly — otherwise the connection is held until GC on every
+// tool call.
+describe('telemetry response stream release', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  const track = async (res: Response, warn: jest.Mock): Promise<void> => {
+    jest.spyOn(global, 'fetch').mockResolvedValue(res);
+    const client = createTelemetryClient({
+      endpointUrl: 'https://t.example/events',
+      logger: { warn },
+    });
+    client.track(sampleEvent);
+    await client.flush();
+  };
+
+  it('cancels the body on a success response and warns about nothing', async () => {
+    const warn = jest.fn();
+    const { res, cancel } = streamResponse({ ok: true, status: 204 });
+    await track(res, warn);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('cancels the body on a non-success response and keeps the existing warning', async () => {
+    const warn = jest.fn();
+    const { res, cancel } = streamResponse({ ok: false, status: 401 });
+    await track(res, warn);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    // The wording is grepped by operators; releasing the stream must not
+    // change it.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toBe(
+      '[telemetry] non-success response: status=401 event=integration.mcp.invoked',
+    );
+  });
+
+  it('tolerates a null body (204 with no content)', async () => {
+    const warn = jest.fn();
+    await track({ ok: true, status: 204, body: null } as Response, warn);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  // 対のテスト: releasing the stream must not be able to turn a *sent* event
+  // into a reported failure. Without the try/catch inside `discardBody`, the
+  // rejection lands in the outer catch and warns "send failed".
+  it('does not report a send failure when cancel() rejects', async () => {
+    const warn = jest.fn();
+    const { res, cancel } = streamResponse({ ok: true, status: 204 });
+    cancel.mockRejectedValue(new Error('cancel boom'));
+    await expect(track(res, warn)).resolves.toBeUndefined();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('still reports a send failure when fetch itself rejects', async () => {
+    const warn = jest.fn();
+    jest
+      .spyOn(global, 'fetch')
+      .mockRejectedValue(new TypeError('fetch failed'));
+    const client = createTelemetryClient({
+      endpointUrl: 'https://t.example/events',
+      logger: { warn },
+    });
+    client.track(sampleEvent);
+    await client.flush();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('send failed: fetch failed');
+  });
+});
+
 describe('telemetryClientFromEnv', () => {
   let savedUrl: string | undefined;
   let savedSecret: string | undefined;
@@ -140,8 +238,8 @@ describe('telemetryClientFromEnv', () => {
     await client.flush();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
-    expect((init.headers as Record<string, string>)[TELEMETRY_SECRET_HEADER]).toBe(
-      'env-secret',
-    );
+    expect(
+      (init.headers as Record<string, string>)[TELEMETRY_SECRET_HEADER],
+    ).toBe('env-secret');
   });
 });

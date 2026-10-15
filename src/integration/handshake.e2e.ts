@@ -21,6 +21,7 @@ jest.mock('../client', () => ({
   generatePdfsAsync: jest.fn(),
   downloadFile: jest.fn(),
   downloadZip: jest.fn(),
+  getGenerationStatus: jest.fn(),
 }));
 jest.mock('../roots/index', () => ({
   resolveDefaultOutputDir: jest.fn(),
@@ -38,12 +39,21 @@ jest.mock('../telemetry/index', () => ({
 }));
 
 import { createTestClient } from './helpers/createTestClient';
+import { SERVER_INSTRUCTIONS } from '../instructions';
 
 // stdio モードの期待ツール数 (search / fetch は ChatGPT Apps 規約ツールとして両モードに登録)
 // 12 = 既存 10 + search / fetch。+2 = ギャラリー参照ツール
 // (search_gallery_templates / get_gallery_template, PRJ-3-1237)。
 // +1 = ギャラリー複製ツール (copy_gallery_template, PRJ-3-1238)。
-const EXPECTED_STDIO_TOOL_COUNT = 15;
+// +1 = 生成状態の確認ツール (get_generation_status, PRJ-3-2018)。
+//
+// **これは ADMIN の期待値** (PRJ-3-1584 / ST-3)。`createTestClient` の既定ロールが
+// ADMIN なので、この数はワークスペース権限を入れる前と同じままになる。
+// ロール別の一覧 (READ で copy_gallery_template が消える / 未認証は 3 ツールだけ)
+// は `workspace-role.e2e.ts` が確定表と突き合わせて別に検証する。この定数を
+// 「フィルタが入ったから」と減らして通してはいけない —— 減らすと ADMIN のカタログ
+// が縮んだ事故を検出できなくなる。
+const EXPECTED_STDIO_TOOL_COUNT = 16;
 
 describe('MCP handshake (Layer A)', () => {
   let cleanup: () => Promise<void>;
@@ -85,6 +95,26 @@ describe('MCP handshake (Layer A)', () => {
     expect(meta.icons?.[0]?.src).toContain('mcp.re-port-flow.com/favicon');
   });
 
+  // ─── instructions (PRJ-3-1373) ────────────────────────────────────────────
+  // 接続直後にクライアント AI 側から初回生成を提案させるための指示文。
+  // 文案の中身 (初回導線 4 ツールの記載順など) は server.spec.ts が定数に対して
+  // 検証する。ここで見るのは「定数がプロトコル上そのまま届くか」だけ。
+  // 経路は旧仕様 (initialize)。2026-07-28 の server/discover は
+  // http-server-modern.spec.ts、パッケージ済み dist の実 stdio は
+  // scripts/packaging-smoke.mjs が別に見る。
+  it('initialize: instructions が確定文案と一致する', () => {
+    expect(handle.client.getInstructions()).toBe(SERVER_INSTRUCTIONS);
+  });
+
+  it('http モードでも同一の instructions が返る (モード出し分けなし)', async () => {
+    // http は claude.ai / ChatGPT Apps 経路。stdio 専用ツール (authenticate 等) は
+    // 登録されないが、初回導線の 4 ツールは両モード共通なので文案も共通 1 本。
+    const httpHandle = await createTestClient('http');
+    const instructions = httpHandle.client.getInstructions();
+    await httpHandle.cleanup();
+    expect(instructions).toBe(SERVER_INSTRUCTIONS);
+  });
+
   // ─── tools/list ───────────────────────────────────────────────────────────
 
   describe('tools/list', () => {
@@ -122,6 +152,7 @@ describe('MCP handshake (Layer A)', () => {
       'generate_pdfs_async',
       'download_file',
       'download_zip',
+      'get_generation_status',
       'suggest_params',
       'search',
       'fetch',

@@ -26,6 +26,19 @@ declare global {
       XDG_STATE_HOME?: string;
       /** [任意] HTTP 版 MCP の Open API 連携トークン */
       OPENAI_APPS_CHALLENGE_TOKEN?: string;
+      /**
+       * [任意/staging 限定] Cloudflare Access Service Token の Client ID。
+       * OAuth proxy (/register・/token) が上流 reposts-api を叩くときに
+       * `CF-Access-Client-Id` として載せる (詳細は src/oauth-upstream.ts)。
+       * OAuth2 の `client_id` を上書きする REPORTFLOW_CLIENT_ID とは別物。
+       * RF_ACCESS_CLIENT_SECRET と 2 値セット。片方だけだと起動時に失敗する。
+       */
+      RF_ACCESS_CLIENT_ID?: string;
+      /**
+       * [任意/staging 限定] Cloudflare Access Service Token の Client Secret。
+       * `CF-Access-Client-Secret` として載せる。RF_ACCESS_CLIENT_ID と 2 値セット。
+       */
+      RF_ACCESS_CLIENT_SECRET?: string;
     }
   }
 }

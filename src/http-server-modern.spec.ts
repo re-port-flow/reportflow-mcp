@@ -22,6 +22,8 @@ import {
   StreamableHTTPClientTransport,
 } from '@modelcontextprotocol/client';
 import { buildHttpApp } from './http-server';
+import { fixedAuthorization } from './integration/helpers/createTestClient';
+import { SERVER_INSTRUCTIONS } from './instructions';
 
 const MODERN_PROTOCOL_VERSION = '2026-07-28';
 
@@ -62,7 +64,14 @@ const parseJsonRpc = (res: {
 };
 
 describe('http-server (2026-07-28 modern era)', () => {
-  const app = buildHttpApp();
+  // ロールを ADMIN に固定する (PRJ-3-1584 / ST-3)。
+  // 本番の resolver は reposts-api `GET /workspace/list` を引くので、テストでは
+  // 常に `unauthenticated` (= 公開ツールのみ) に落ち、ここで見たい新旧世代の
+  // プロトコル互換そのものが検証できなくなる。ロール別の一覧は
+  // `server.spec.ts` / `handshake.e2e.ts` が別に押さえている。
+  const app = buildHttpApp({
+    resolveAuthorization: () => Promise.resolve(fixedAuthorization('ADMIN')),
+  });
 
   describe('raw wire (supertest)', () => {
     it('新仕様 tools/list (_meta envelope + Mcp-Method) は 200 で resultType/ttlMs/cacheScope を含む', async () => {
@@ -328,6 +337,28 @@ describe('http-server (2026-07-28 modern era)', () => {
       expect(JSON.stringify(result)).toContain(MODERN_PROTOCOL_VERSION);
     });
 
+    it('server/discover の結果に instructions が含まれる (PRJ-3-1373)', async () => {
+      // 新仕様クライアント (claude.ai 等) は initialize を送らず server/discover
+      // だけで接続情報を受け取る。旧仕様の initialize 応答を見る e2e / packaging
+      // smoke ではこの経路を通らないため、ここで別に固定する。
+      const res = await request(app)
+        .post('/mcp')
+        .set('Accept', 'application/json, text/event-stream')
+        .set('MCP-Protocol-Version', MODERN_PROTOCOL_VERSION)
+        .set('Mcp-Method', 'server/discover')
+        .send({
+          jsonrpc: '2.0',
+          id: 41,
+          method: 'server/discover',
+          params: { _meta: modernMeta() },
+        });
+
+      const msg = parseJsonRpc(res);
+      expect(msg.error).toBeUndefined();
+      const result = msg.result as { instructions?: string };
+      expect(result.instructions).toBe(SERVER_INSTRUCTIONS);
+    });
+
     it('ルート / でも server/discover が /mcp と同様に応答する (Smithery/Glama 対策の維持)', async () => {
       const res = await request(app)
         .post('/')
@@ -541,9 +572,7 @@ describe('http-server (2026-07-28 modern era)', () => {
       try {
         expect(res.status).toBe(200);
         expect(res.headers.get('content-type')).toContain('text/event-stream');
-        const reader = (
-          res.body as ReadableStream<Uint8Array>
-        ).getReader();
+        const reader = (res.body as ReadableStream<Uint8Array>).getReader();
         const { value } = await reader.read();
         const firstFrame = new TextDecoder().decode(value);
         expect(firstFrame).toContain(

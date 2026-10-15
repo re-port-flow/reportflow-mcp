@@ -54,6 +54,15 @@ describe('generate_pdfs prompt', () => {
     expect(text).not.toContain('zipFileName は');
   });
 
+  // PRJ-3-2016: 同期生成は 60 秒で 504 になる。根拠の無い件数 (旧「〜数十件」) ではなく
+  // 60 秒の上限で sync / async を選ばせる。
+  it('chooses sync vs async by the 60-second sync limit, not by a fixed count', () => {
+    const text = handleGeneratePdfsPrompt({}).messages[0].content.text;
+    expect(text).toContain('60 秒');
+    expect(text).toContain('generate_pdfs_async');
+    expect(text).not.toContain('数十件');
+  });
+
   it('always reminds about re-authentication', () => {
     const text = handleGeneratePdfsPrompt({}).messages[0].content.text;
     expect(text).toContain('authenticate');

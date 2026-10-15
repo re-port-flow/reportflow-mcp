@@ -3,32 +3,11 @@ import {
   buildServerInfo,
   SERVER_INFO_URI,
 } from './server-info.js';
+import { PUBLIC_CAPABILITIES } from '../workspace-permission.js';
 
 const PKG = { name: 'reportflow-mcp', version: '9.9.9' };
 
-const ENV_KEYS = [
-  'REPORTFLOW_API_BASE_URL',
-  'REPORTFLOW_AUTH_URL',
-  'REPORTFLOW_CLIENT_ID',
-] as const;
-
 describe('buildServerInfo', () => {
-  const saved: Record<string, string | undefined> = {};
-
-  beforeEach(() => {
-    for (const key of ENV_KEYS) {
-      saved[key] = process.env[key];
-      delete process.env[key];
-    }
-  });
-
-  afterEach(() => {
-    for (const key of ENV_KEYS) {
-      if (saved[key] === undefined) delete process.env[key];
-      else process.env[key] = saved[key];
-    }
-  });
-
   it('reflects the package name/version and full capability surface', () => {
     const info = buildServerInfo(PKG);
     expect(info.name).toBe('reportflow-mcp');
@@ -42,27 +21,53 @@ describe('buildServerInfo', () => {
     expect(info.workflow.bulkPdf).toContain('download_zip');
   });
 
-  it('falls back to default env values when unset', () => {
+  it('does not expose runtime environment configuration', () => {
+    process.env.REPORTFLOW_API_BASE_URL = 'https://internal.example';
+    process.env.REPORTFLOW_AUTH_URL = 'https://oauth.internal.example';
+    process.env.REPORTFLOW_CLIENT_ID = 'secret-client-id';
     const info = buildServerInfo(PKG);
-    expect(info.envVars.REPORTFLOW_API_BASE_URL).toBe(
-      'https://api.re-port-flow.com',
-    );
-    expect(info.envVars.REPORTFLOW_AUTH_URL).toBe(
-      'https://re-port-flow.com/api/v1',
-    );
-    expect(info.envVars.REPORTFLOW_CLIENT_ID).toBe('reportflow-mcp');
+    expect(info).not.toHaveProperty('envVars');
   });
 
-  it('reflects overridden env values', () => {
-    process.env.REPORTFLOW_API_BASE_URL = 'https://api.stg.re-port-flow.com';
-    process.env.REPORTFLOW_AUTH_URL = 'https://stg.re-port-flow.com/api/v1';
-    process.env.REPORTFLOW_CLIENT_ID = 'custom-client';
-    const info = buildServerInfo(PKG);
-    expect(info.envVars).toEqual({
-      REPORTFLOW_API_BASE_URL: 'https://api.stg.re-port-flow.com',
-      REPORTFLOW_AUTH_URL: 'https://stg.re-port-flow.com/api/v1',
-      REPORTFLOW_CLIENT_ID: 'custom-client',
-    });
+  it('does not advertise workspace resources to an unauthenticated client', () => {
+    const info = buildServerInfo(PKG, PUBLIC_CAPABILITIES);
+
+    expect(info.capabilities.resources).toEqual([
+      'reportflow://errors',
+      'reportflow://server-info',
+    ]);
+    expect(info.capabilities.resources).not.toContain('reportflow://designs');
+    expect(info.capabilities.resources).not.toContain(
+      'reportflow://designs/{designId}/parameters',
+    );
+  });
+
+  it('reflects capability changes when server-info is read again', () => {
+    let granted = PUBLIC_CAPABILITIES;
+    const read = buildReadServerInfo(PKG, () => granted);
+    const publicInfo = JSON.parse(
+      read(new URL(SERVER_INFO_URI)).contents[0].text,
+    ) as ReturnType<typeof buildServerInfo>;
+
+    granted = new Set([
+      'public',
+      'workspace.read',
+      'workspace.generate',
+    ] as const);
+    const authenticatedInfo = JSON.parse(
+      read(new URL(SERVER_INFO_URI)).contents[0].text,
+    ) as ReturnType<typeof buildServerInfo>;
+
+    expect(publicInfo.capabilities.resources).toEqual([
+      'reportflow://errors',
+      'reportflow://server-info',
+    ]);
+    expect(authenticatedInfo.capabilities.resources).toEqual([
+      'reportflow://designs',
+      'reportflow://designs/{designId}/parameters',
+      'reportflow://errors',
+      'reportflow://server-info',
+    ]);
   });
 });
 
