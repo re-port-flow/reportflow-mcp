@@ -13,9 +13,9 @@ jobs:
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Setup Node v22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22.x"
           registry-url: "https://registry.npmjs.org"
@@ -40,7 +40,7 @@ jobs:
       contents: read
       id-token: write # GitHub OIDC 認証に必須
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # registry は server.json と npm パッケージの version 一致を要求するため、
       # 公開済み npm バージョン (package.json) を server.json に同期させる。
       # これにより server.json の手動 bump 漏れで registry が取り残される事故を防ぐ。
