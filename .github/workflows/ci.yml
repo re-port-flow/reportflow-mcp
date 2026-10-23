@@ -14,7 +14,7 @@ jobs:
       - name: Setup Node v22
         uses: actions/setup-node@v7
         with:
-          node-version: "22.x"
+          node-version-file: .node-version
           cache: 'yarn'
           cache-dependency-path: './yarn.lock'
       - name: Install modules
@@ -35,7 +35,7 @@ jobs:
       - name: Setup Node v22
         uses: actions/setup-node@v7
         with:
-          node-version: "22.x"
+          node-version-file: .node-version
           cache: 'yarn'
           cache-dependency-path: './yarn.lock'
       - name: Install modules
@@ -57,7 +57,7 @@ jobs:
       - name: Setup Node v22
         uses: actions/setup-node@v7
         with:
-          node-version: "22.x"
+          node-version-file: .node-version
           cache: 'yarn'
           cache-dependency-path: './yarn.lock'
       - name: Install modules
@@ -79,7 +79,7 @@ jobs:
       - name: Setup Node v22
         uses: actions/setup-node@v7
         with:
-          node-version: "22.x"
+          node-version-file: .node-version
       # PRIVATE から同期した README が PRIVATE にしか無いパス (docs/ 等) を
       # 参照したままだと、この公開リポジトリでは 404 になる。人手の確認では
       # 再発するので落とす。
