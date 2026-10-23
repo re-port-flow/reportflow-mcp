@@ -17,11 +17,15 @@ const URLS = {
     mcp: 'https://mcp.re-port-flow.com',
     // OAuth Authorization Server (reposts-api: NestJS global prefix v1 + apex domain 経由)
     oauthIssuer: 'https://re-port-flow.com/api/v1',
+    // 公開テンプレートギャラリーのサイト (template-gallery)。詳細ページは
+    // `/templates/{slug}` で、slug は公開一覧 API の slug と同じ値
+    templateSite: 'https://templates.re-port-flow.com/templates',
   },
   stg: {
     api: 'https://api.stg.re-port-flow.com',
     mcp: 'https://mcp.stg.re-port-flow.com',
     oauthIssuer: 'https://stg.re-port-flow.com/api/v1',
+    templateSite: 'https://templates.stg.re-port-flow.com/templates',
   },
 } as const;
 
@@ -34,6 +38,11 @@ export const MCP_RESOURCE_URL = URLS[STAGE].mcp;
  */
 export const REPORTFLOW_OAUTH_ISSUER_URL = URLS[STAGE].oauthIssuer;
 export const RUNTIME_STAGE: Stage = STAGE;
+/**
+ * 公開テンプレートギャラリーのサイト URL。`search_gallery_templates` が 0 件の
+ * とき、デザインを見て選べる案内先として返す (PRJ-3-2270)。
+ */
+export const TEMPLATE_GALLERY_SITE_URL = URLS[STAGE].templateSite;
 
 // ─── reposts-api (main API) のベース URL ──────────────────────────────────────
 //

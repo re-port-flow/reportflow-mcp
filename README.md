@@ -66,7 +66,7 @@ Same JSON in `.vscode/mcp.json`.
 ### Requirements
 
 - **Remote**: an MCP client that supports custom HTTP connectors (e.g. claude.ai). No local install.
-- **Local (stdio)**: Node.js 22+ (auto-fetched by `npx`) and a browser available during the first login.
+- **Local (stdio)**: Node.js 22.23.4 or later in the 22.x line (`engines: ^22.23.4`) and a browser available during the first login. Install a patched Node.js separately; `npx` downloads the MCP package. The minimum patch requirement includes the 2026-10-21 Node.js security fixes.
 - A [Re:port Flow](https://re-port-flow.com) account (either way).
 
 ### Supported protocol revisions
@@ -164,6 +164,11 @@ into your workspace with `copy_gallery_template`, and then proceeds with the
 normal flow (`get_design_parameters` → `generate_pdf_sync`). The copy always
 lands in the workspace you selected on the OAuth consent screen — the AI
 cannot target any other workspace.
+
+If the search finds nothing, the result carries a `templateSite` link to the
+[template gallery site](https://templates.re-port-flow.com/templates), where you
+can browse the designs. Share the page URL of the one you like
+(`/templates/{slug}`) and the AI copies it by that slug.
 
 ### Slash commands
 

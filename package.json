@@ -1,6 +1,6 @@
 {
   "name": "reportflow-mcp",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "mcpName": "io.github.re-port-flow/reportflow-mcp",
   "description": "Re:port Flow MCP Server - PDF generation from templates for Claude and AI agents",
   "keywords": [
@@ -34,7 +34,7 @@
     "LICENSE"
   ],
   "engines": {
-    "node": "^22"
+    "node": "^22.23.4"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json && chmod +x dist/index.js",

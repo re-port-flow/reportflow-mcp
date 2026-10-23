@@ -4,6 +4,7 @@ import {
   GalleryTemplateItem,
 } from '../gallery-client.js';
 import { HttpError } from '../http.js';
+import { TEMPLATE_GALLERY_SITE_URL } from '../config.js';
 import type { GallerySearchObservation } from '../telemetry/gallery-demand.js';
 import { isQueryRecordable } from '../telemetry/gallery-demand.js';
 
@@ -333,6 +334,14 @@ export const handleSearchGalleryTemplates = async (
       ...(items.length === 0
         ? {
             hint: '該当するテンプレートがありませんでした。query を短くする・category を外すなど条件を緩めて再検索してください。',
+            // 0 件で行き止まりにしない (PRJ-3-2270)。公開テンプレートのタイトルは
+            // 日本語が中心で、AI が英語の汎用語 ("report" 等) で探すと当たらない。
+            // 名前の一覧ではデザインが分からず選べないため、デザインを見て選べる
+            // サイトへ誘導する。詳細ページの URL 末尾がそのまま slug になる。
+            templateSite: {
+              url: TEMPLATE_GALLERY_SITE_URL,
+              message: `公開テンプレートは ${TEMPLATE_GALLERY_SITE_URL} でデザインを見て選べます。利用者にこのリンクを案内してください。気に入ったテンプレートの詳細ページ URL（${TEMPLATE_GALLERY_SITE_URL}/{slug}）を伝えてもらえば、その slug を copy_gallery_template に渡して複製できます。`,
+            },
           }
         : {}),
     };

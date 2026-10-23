@@ -46,6 +46,7 @@ function parsePayload(result: { content: [{ type: 'text'; text: string }] }) {
     totalPublished: number;
     note?: string;
     hint?: string;
+    templateSite?: { url: string; message: string };
   };
 }
 
@@ -113,6 +114,91 @@ describe('handleSearchGalleryTemplates', () => {
     expect(payload.items).toEqual([]);
     expect(payload.matchedCount).toBe(0);
     expect(payload.hint).toContain('条件を緩めて');
+  });
+
+  // PRJ-3-2270: 0 件で行き止まりにせず、デザインを見て選べるサイトへ誘導する
+  it('0件: 英語の汎用語で当たらないとき、テンプレートサイトのリンクを返す', async () => {
+    mockListResponse([
+      galleryItem({ slug: '0eUPGyiGX8uzwE8L', title: '請求書' }),
+      galleryItem({ slug: '0eUPHHS3Iejd8Smr', title: '見積もり' }),
+    ]);
+
+    const result = await handleSearchGalleryTemplates({ query: 'report' });
+
+    expect(result.isError).toBeUndefined();
+    const payload = parsePayload(result);
+    expect(payload.matchedCount).toBe(0);
+    expect(payload.templateSite?.url).toBe(
+      'https://templates.re-port-flow.com/templates',
+    );
+    // 案内文だけで次の操作 (詳細ページの slug → 複製) へ進めること
+    expect(payload.templateSite?.message).toContain(
+      'https://templates.re-port-flow.com/templates/{slug}',
+    );
+    expect(payload.templateSite?.message).toContain('copy_gallery_template');
+    // 既存項目は変えない (追加のみ)
+    expect(payload.hint).toBe(
+      '該当するテンプレートがありませんでした。query を短くする・category を外すなど条件を緩めて再検索してください。',
+    );
+  });
+
+  it('ヒットあり: テンプレートサイトの案内は付けず、応答の項目は従来どおり', async () => {
+    mockListResponse([galleryItem({ slug: 'invoice-basic', title: '請求書' })]);
+
+    const result = await handleSearchGalleryTemplates({ query: '請求' });
+
+    const payload = parsePayload(result);
+    expect(Object.keys(payload)).toEqual([
+      'items',
+      'returnedCount',
+      'matchedCount',
+      'remainingCount',
+      'scannedCount',
+      'totalPublished',
+    ]);
+  });
+
+  it('0件かつ走査打ち切り: 未走査の note とテンプレートサイトの案内を両方返す', async () => {
+    // 「見ていない」ことと「サイトでは全件を見られる」ことは両立する
+    const makePage = (prefix: string) =>
+      Array.from({ length: 100 }, (_, i) =>
+        galleryItem({ slug: `${prefix}-${i}`, title: `その他 ${i}` }),
+      );
+    mockListResponse(makePage('p1'), { nextCursor: 'c1', total: 500 });
+    mockListResponse(makePage('p2'), { nextCursor: 'c2', total: 500 });
+    mockListResponse(makePage('p3'), { nextCursor: 'c3', total: 500 });
+
+    const result = await handleSearchGalleryTemplates({ query: '請求' });
+
+    const payload = parsePayload(result);
+    expect(payload.matchedCount).toBe(0);
+    expect(payload.note).toContain('先頭 300 件のみ検索しました');
+    expect(payload.templateSite?.url).toBe(
+      'https://templates.re-port-flow.com/templates',
+    );
+  });
+
+  it('0件: staging ではステージングのテンプレートサイトを返す', async () => {
+    // slug は環境ごとの公開一覧 API の値なので、案内先も同じ環境に揃える
+    const originalNodeEnv = process.env['NODE_ENV'];
+    process.env['NODE_ENV'] = 'staging';
+    try {
+      let handler: typeof handleSearchGalleryTemplates | undefined;
+      jest.isolateModules(() => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        handler = require('./search-gallery-templates')
+          .handleSearchGalleryTemplates as typeof handleSearchGalleryTemplates;
+      });
+      mockListResponse([]);
+
+      const result = await handler!({ query: 'report' });
+
+      expect(parsePayload(result).templateSite?.url).toBe(
+        'https://templates.stg.re-port-flow.com/templates',
+      );
+    } finally {
+      process.env['NODE_ENV'] = originalNodeEnv;
+    }
   });
 
   it('境界: limit=999 は 50 にクリップされエラーにしない', async () => {
