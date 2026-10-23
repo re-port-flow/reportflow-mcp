@@ -7,11 +7,14 @@ import {
   isSyncGenerationTimeout,
   SYNC_TIMEOUT_GUIDANCE,
 } from './sync-timeout.js';
+import { SAMPLE_GENERATION_POLICY } from './sample-policy.js';
 
 export const generatePdfSyncTool = {
   name: 'generate_pdf_sync',
   description:
-    'designId（テンプレートのID）とパラメータを指定してPDFを出力します。本ツール 1 回の呼び出しで結果提示が完結します (別途ダウンロード用ツールを呼ぶ必要はありません)。生成が 60 秒を超えると API がタイムアウト (504) し、PDF を受け取れません (サーバー側では生成が続き、ページが消費されることがあります)。60 秒を超えうる生成は generate_pdfs_async を使うこと。\n- stdio モード (Claude Desktop / Code): ローカルに保存し絶対パスも返します。outputDir で保存先を指定できます (未指定時はクライアントのワークスペース Roots または OS 一時ディレクトリ)。\n- HTTP モード (claude.ai / n8n 等): サーバー側には保存せず、fileUrl と requestId / fileId を返します。fileUrl は Re:port Flow Web アプリの出力履歴画面の URL で、ファイルを直接ダウンロードする URL ではありません (Re:port Flow にログインして開く画面です)。\n\n【重要】呼び出し前に必ず get_design_parameters でテンプレートの必要パラメータ構造を確認し、ユーザーから必要な値を聞き出すこと。プレースホルダー値・架空の値を勝手に生成しないこと。\n\n【passthrough のプライバシー注意】content.passthrough のトップレベルの文字列/数値の値は出力した PDF の XMP メタデータに埋め込まれ、PDF 受領者や OS のファイル検索 (Spotlight / Windows Search) から閲覧可能になるため、個人情報・機微情報を入れないこと。',
+    'designId（テンプレートのID）とパラメータを指定してPDFを出力します。本ツール 1 回の呼び出しで結果提示が完結します (別途ダウンロード用ツールを呼ぶ必要はありません)。生成が 60 秒を超えると API がタイムアウト (504) し、PDF を受け取れません (サーバー側では生成が続き、ページが消費されることがあります)。60 秒を超えうる生成は generate_pdfs_async を使うこと。\n- stdio モード (Claude Desktop / Code): ローカルに保存し絶対パスも返します。outputDir で保存先を指定できます (未指定時はクライアントのワークスペース Roots または OS 一時ディレクトリ)。\n- HTTP モード (claude.ai / n8n 等): サーバー側には保存せず、fileUrl と requestId / fileId を返します。fileUrl は Re:port Flow Web アプリの出力履歴画面の URL で、ファイルを直接ダウンロードする URL ではありません (Re:port Flow にログインして開く画面です)。\n\n【重要】呼び出し前に必ず get_design_parameters でテンプレートの必要パラメータ構造を確認すること。' +
+    SAMPLE_GENERATION_POLICY +
+    '\n\n【passthrough のプライバシー注意】content.passthrough のトップレベルの文字列/数値の値は出力した PDF の XMP メタデータに埋め込まれ、PDF 受領者や OS のファイル検索 (Spotlight / Windows Search) から閲覧可能になるため、個人情報・機微情報を入れないこと。',
 };
 
 export type GeneratePdfSyncInput = {

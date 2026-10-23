@@ -2,6 +2,7 @@ import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { contentDtoSchema, createMcpServer } from './server';
 import { adminAuthorizationOptions } from './integration/helpers/createTestClient';
 import { SERVER_INSTRUCTIONS } from './instructions';
+import { SAMPLE_GENERATION_POLICY } from './tools/sample-policy';
 import {
   TEMPLATE_LIST_WIDGET_URI,
   WIDGET_MIME_TYPE,
@@ -263,6 +264,25 @@ describe('Tool annotations (WS2c)', () => {
       expect(tool.annotations?.readOnlyHint).toBe(false);
       expect(tool.annotations?.destructiveHint).toBe(false);
       expect(tool.annotations?.idempotentHint).toBe(false);
+    });
+
+    // PRJ-3-2280: 説明文だけを変えた。公開される説明に方針の文が載り、入力項目は変わらない。
+    it('get_design_parameters / generate_pdf_sync: 説明にサンプル方針が載り、入力項目は変わらない', () => {
+      const params = findTool(tools, 'get_design_parameters');
+      expect(params.description).toContain(SAMPLE_GENERATION_POLICY);
+      expect(Object.keys(params.inputSchema.properties ?? {}).sort()).toEqual([
+        'designId',
+        'version',
+      ]);
+      expect(params.inputSchema.required ?? []).toEqual(['designId']);
+
+      const sync = findTool(tools, 'generate_pdf_sync');
+      expect(sync.description).toContain(SAMPLE_GENERATION_POLICY);
+      expect(Object.keys(sync.inputSchema.properties ?? {}).sort()).toEqual([
+        'content',
+        'designId',
+        'version',
+      ]);
     });
 
     it('generate_pdfs_async: readOnlyHint=false, destructiveHint=false, idempotentHint=false', () => {
