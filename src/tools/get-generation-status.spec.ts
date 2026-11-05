@@ -225,3 +225,468 @@ describe('get_generation_status (PRJ-3-2018)', () => {
     expect(result.content[0].text).toBe('エラー: boom');
   });
 });
+
+describe('get_generation_status: Slack 状態カード (PRJ-3-2563)', () => {
+  beforeEach(() => jest.clearAllMocks());
+  const body = {
+    requestId: 'AbC123dEf456GhI7',
+    status: 'processing',
+    files: [],
+  };
+
+  it('slackBlocks を指定しなければ _meta を付けない', async () => {
+    mockFetch.mockResolvedValue(jsonRes(body));
+    const result = await handleGetGenerationStatus(
+      { requestId: body.requestId },
+      { mode: 'http' },
+    );
+    expect(result._meta).toBeUndefined();
+  });
+
+  it('slackBlocks: true なら text は変えずに状態カードを足す', async () => {
+    mockFetch.mockResolvedValue(jsonRes(body));
+    const without = await handleGetGenerationStatus(
+      { requestId: body.requestId },
+      { mode: 'http' },
+    );
+    mockFetch.mockResolvedValue(jsonRes(body));
+    const withCard = await handleGetGenerationStatus(
+      { requestId: body.requestId },
+      { mode: 'http', slackBlocks: true },
+    );
+    expect(withCard.content).toEqual(without.content);
+    expect(JSON.stringify(withCard._meta?.slack.blocks)).toContain('生成中');
+  });
+
+  it('照会の失敗 (404 等) にはカードを付けない', async () => {
+    mockFetch.mockResolvedValue(
+      jsonRes({ message: 'not found' }, { status: 404 }),
+    );
+    const result = await handleGetGenerationStatus(
+      { requestId: body.requestId },
+      { mode: 'http', slackBlocks: true },
+    );
+    expect(result.isError).toBe(true);
+    expect(result._meta).toBeUndefined();
+  });
+});
+
+describe('get_generation_status: プラン起因の判定は text とカードで一致する (PRJ-3-2563)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('上位が FILE_GENERATION_FAILED・ファイル側が PLAN_* のとき、text もカードもプラン起因の案内', async () => {
+    mockFetch.mockResolvedValue(
+      jsonRes({
+        requestId: 'AbC123dEf456GhI7',
+        status: 'failed',
+        files: [],
+        error: { code: 'FILE_GENERATION_FAILED', message: 'all failed' },
+        failedFiles: [
+          {
+            fileName: 'a.pdf',
+            code: 'PLAN_PAGE_LIMIT_EXCEEDED',
+            message: 'limit',
+          },
+        ],
+      }),
+    );
+    const result = await handleGetGenerationStatus(
+      { requestId: 'AbC123dEf456GhI7' },
+      { mode: 'http', slackBlocks: true },
+    );
+    const text = result.content[0].text;
+    expect(text).toContain('プランの上限や設定による失敗です');
+    expect(text).not.toContain('入力の誤りなら直してから');
+    expect(JSON.stringify(result._meta?.slack.blocks)).toContain(
+      '再生成しても解消しません',
+    );
+  });
+});
+
+describe('get_generation_status: プラン起因と入力誤りの混在 (PRJ-3-2563)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('text はプランの案内と、プラン以外は直して再生成の案内を両方出す', async () => {
+    mockFetch.mockResolvedValue(
+      jsonRes({
+        requestId: 'AbC123dEf456GhI7',
+        status: 'failed',
+        files: [],
+        error: { code: 'FILE_GENERATION_FAILED', message: 'all failed' },
+        failedFiles: [
+          {
+            fileName: 'a.pdf',
+            code: 'PLAN_PAGE_LIMIT_EXCEEDED',
+            message: 'limit',
+          },
+          { fileName: 'b.pdf', code: 'INVALID_PARAMS', message: 'bad' },
+        ],
+      }),
+    );
+    const result = await handleGetGenerationStatus({
+      requestId: 'AbC123dEf456GhI7',
+    });
+    const text = result.content[0].text;
+    expect(text).toContain('プランの上限や設定による失敗です');
+    expect(text).toContain('入力の誤りなら直してから');
+  });
+});
+
+describe('get_generation_status: 上流が契約外の値を返してもカードで落ちない (PRJ-3-2563)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('failedFiles の fileName が null でも isError にならず、text と (エスケープ済みの) カードを返す', async () => {
+    mockFetch.mockResolvedValue(
+      jsonRes({
+        requestId: 'AbC123dEf456GhI7',
+        status: 'failed',
+        files: [],
+        error: { code: 'FILE_GENERATION_FAILED', message: 'x' },
+        failedFiles: [{ fileName: null, code: 'X', message: 'y' }],
+      }),
+    );
+    const result = await handleGetGenerationStatus(
+      { requestId: 'AbC123dEf456GhI7' },
+      { mode: 'http', slackBlocks: true },
+    );
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('生成に失敗しました');
+    expect(result._meta?.slack.blocks.length).toBeGreaterThan(0);
+  });
+
+  it('error.message が欠けていても isError にならない', async () => {
+    mockFetch.mockResolvedValue(
+      jsonRes({
+        requestId: 'AbC123dEf456GhI7',
+        status: 'failed',
+        files: [],
+        error: { code: 'FILE_GENERATION_FAILED' },
+      }),
+    );
+    const result = await handleGetGenerationStatus(
+      { requestId: 'AbC123dEf456GhI7' },
+      { mode: 'http', slackBlocks: true },
+    );
+    expect(result.isError).toBeUndefined();
+  });
+});
+
+describe('get_generation_status: failedFiles が契約外の形でも text を返す (PRJ-3-2563)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it.each([
+    ['[null]', [null]],
+    ['{}', {}],
+    ['文字列', 'oops'],
+  ])(
+    'failedFiles が %s のとき、slack 無効でも有効でも isError にならない',
+    async (_l, failedFiles) => {
+      for (const slackBlocks of [false, true]) {
+        mockFetch.mockResolvedValue(
+          jsonRes({
+            requestId: 'AbC123dEf456GhI7',
+            status: 'failed',
+            files: [],
+            error: { code: 'FILE_GENERATION_FAILED', message: 'x' },
+            failedFiles,
+          }),
+        );
+        const result = await handleGetGenerationStatus(
+          { requestId: 'AbC123dEf456GhI7' },
+          { mode: 'http', slackBlocks },
+        );
+        expect(result.isError).toBeUndefined();
+        expect(result.content[0].text).toContain('生成に失敗しました');
+      }
+    },
+  );
+});
+
+describe('get_generation_status: completed の一部失敗でもプラン判定は text とカードで一致する (PRJ-3-2563)', () => {
+  beforeEach(() => jest.clearAllMocks());
+  const base = {
+    requestId: 'AbC123dEf456GhI7',
+    status: 'completed',
+    files: [{ fileId: 'f1', fileName: 'ok.pdf', downloadPath: '/v1/x' }],
+  };
+
+  it.each([
+    [
+      'all',
+      [
+        {
+          fileName: 'a.pdf',
+          code: 'PLAN_PAGE_LIMIT_EXCEEDED',
+          message: 'limit',
+        },
+      ],
+      ['再生成しても解消しない'],
+      [],
+    ],
+    [
+      'mixed',
+      [
+        {
+          fileName: 'a.pdf',
+          code: 'PLAN_PAGE_LIMIT_EXCEEDED',
+          message: 'limit',
+        },
+        { fileName: 'b.pdf', code: 'INVALID_PARAMS', message: 'bad' },
+      ],
+      ['再生成しても解消しない', '入力の誤りなら直してから'],
+      [],
+    ],
+    [
+      'none',
+      [{ fileName: 'b.pdf', code: 'INVALID_PARAMS', message: 'bad' }],
+      [],
+      ['再生成しても解消しない'],
+    ],
+  ] as const)('%s', async (_l, failedFiles, contains, notContains) => {
+    mockFetch.mockResolvedValue(jsonRes({ ...base, failedFiles }));
+    const result = await handleGetGenerationStatus(
+      { requestId: base.requestId },
+      { mode: 'http', slackBlocks: true },
+    );
+    const text = result.content[0].text;
+    expect(text).toContain(
+      `ただし ${failedFiles.length} 件は生成に失敗しています`,
+    );
+    for (const c of contains) expect(text).toContain(c);
+    for (const c of notContains) expect(text).not.toContain(c);
+  });
+
+  it('failedFiles に null が混ざっても、件数は読める要素だけを数える (カードと一致)', async () => {
+    mockFetch.mockResolvedValue(
+      jsonRes({
+        ...base,
+        failedFiles: [null, { fileName: 'b.pdf', code: 'X', message: 'y' }],
+      }),
+    );
+    const result = await handleGetGenerationStatus({
+      requestId: base.requestId,
+    });
+    expect(result.content[0].text).toContain(
+      'ただし 1 件は生成に失敗しています',
+    );
+  });
+});
+
+describe('get_generation_status: ファイル側の PLAN では failedFiles の message を伝えさせる (PRJ-3-2563)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it.each([
+    [
+      'all',
+      [
+        {
+          fileName: 'a.pdf',
+          code: 'PLAN_PAGE_LIMIT_EXCEEDED',
+          message: 'upgrade',
+        },
+      ],
+    ],
+    [
+      'mixed',
+      [
+        {
+          fileName: 'a.pdf',
+          code: 'PLAN_PAGE_LIMIT_EXCEEDED',
+          message: 'upgrade',
+        },
+        { fileName: 'b.pdf', code: 'INVALID_PARAMS', message: 'bad' },
+      ],
+    ],
+  ])(
+    '%s: text は failedFiles の message を案内し、総称の error.message を伝えさせない',
+    async (_l, failedFiles) => {
+      mockFetch.mockResolvedValue(
+        jsonRes({
+          requestId: 'AbC123dEf456GhI7',
+          status: 'failed',
+          files: [],
+          error: {
+            code: 'FILE_GENERATION_FAILED',
+            message: 'All 2 files failed to generate.',
+          },
+          failedFiles,
+        }),
+      );
+      const result = await handleGetGenerationStatus({
+        requestId: 'AbC123dEf456GhI7',
+      });
+      const text = result.content[0].text;
+      expect(text).toContain(
+        'code が PLAN を含むものの message をそのまま利用者に伝えて',
+      );
+      expect(text).not.toContain('error.message をそのまま利用者に伝えて');
+    },
+  );
+
+  it('単一出力 (failedFiles 無し) の PLAN は従来どおり error.message を伝えさせる', async () => {
+    mockFetch.mockResolvedValue(
+      jsonRes({
+        requestId: 'AbC123dEf456GhI7',
+        status: 'failed',
+        files: [],
+        error: { code: 'PLAN_PAGE_LIMIT_EXCEEDED', message: 'limit' },
+      }),
+    );
+    const result = await handleGetGenerationStatus({
+      requestId: 'AbC123dEf456GhI7',
+    });
+    expect(result.content[0].text).toContain(
+      'error.message をそのまま利用者に伝えて',
+    );
+  });
+});
+
+describe('get_generation_status: 上位だけが PLAN 系でファイル側は別理由 (PRJ-3-2563)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('failed: error.message を伝えさせ、ファイル側の失敗には直して再生成を案内する', async () => {
+    mockFetch.mockResolvedValue(
+      jsonRes({
+        requestId: 'AbC123dEf456GhI7',
+        status: 'failed',
+        files: [],
+        error: { code: 'PLAN_PAGE_LIMIT_EXCEEDED', message: 'upgrade' },
+        failedFiles: [
+          { fileName: 'a.pdf', code: 'RENDER_FAILED', message: 'x' },
+        ],
+      }),
+    );
+    const result = await handleGetGenerationStatus({
+      requestId: 'AbC123dEf456GhI7',
+    });
+    const text = result.content[0].text;
+    expect(text).toContain('error.message をそのまま利用者に伝えて');
+    expect(text).not.toContain('code が PLAN を含むものの message');
+    expect(text).toContain('入力の誤りなら直してから');
+  });
+
+  it('completed の一部失敗: error.message を伝えさせる', async () => {
+    mockFetch.mockResolvedValue(
+      jsonRes({
+        requestId: 'AbC123dEf456GhI7',
+        status: 'completed',
+        files: [{ fileId: 'f1', fileName: 'ok.pdf', downloadPath: '/v1/x' }],
+        error: { code: 'PLAN_PAGE_LIMIT_EXCEEDED', message: 'upgrade' },
+        failedFiles: [
+          { fileName: 'a.pdf', code: 'RENDER_FAILED', message: 'x' },
+        ],
+      }),
+    );
+    const result = await handleGetGenerationStatus({
+      requestId: 'AbC123dEf456GhI7',
+    });
+    expect(result.content[0].text).toContain(
+      'error.message をそのまま利用者に伝えて',
+    );
+    expect(result.content[0].text).toContain('入力の誤りなら直してから');
+  });
+});
+
+describe('get_generation_status: 上位とファイル側の両方が PLAN 系 (PRJ-3-2563)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('failed: ファイルの message と上位の error.message の両方を伝えさせる', async () => {
+    mockFetch.mockResolvedValue(
+      jsonRes({
+        requestId: 'AbC123dEf456GhI7',
+        status: 'failed',
+        files: [],
+        error: { code: 'PLAN_PAGE_LIMIT_EXCEEDED', message: 'upgrade' },
+        failedFiles: [
+          {
+            fileName: 'a.pdf',
+            code: 'PLAN_PAGE_LIMIT_EXCEEDED',
+            message: 'limit',
+          },
+        ],
+      }),
+    );
+    const result = await handleGetGenerationStatus({
+      requestId: 'AbC123dEf456GhI7',
+    });
+    const text = result.content[0].text;
+    expect(text).toContain(
+      'code が PLAN を含むものの message をそのまま利用者に伝えて',
+    );
+    expect(text).toContain('上位の error.message にも案内があれば併せて伝えて');
+    expect(text).not.toContain('入力の誤りなら直してから');
+  });
+});
+
+describe('get_generation_status: completed で上位とファイル側の両方が PLAN 系 (PRJ-3-2563)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('failed と同じく、上位の error.message も伝えさせる', async () => {
+    mockFetch.mockResolvedValue(
+      jsonRes({
+        requestId: 'AbC123dEf456GhI7',
+        status: 'completed',
+        files: [{ fileId: 'f1', fileName: 'ok.pdf', downloadPath: '/v1/x' }],
+        error: { code: 'PLAN_PAGE_LIMIT_EXCEEDED', message: 'upgrade' },
+        failedFiles: [
+          {
+            fileName: 'a.pdf',
+            code: 'PLAN_PAGE_LIMIT_EXCEEDED',
+            message: 'limit',
+          },
+        ],
+      }),
+    );
+    const result = await handleGetGenerationStatus({
+      requestId: 'AbC123dEf456GhI7',
+    });
+    const text = result.content[0].text;
+    expect(text).toContain('failedFiles の message をそのまま利用者に伝えて');
+    expect(text).toContain('上位の error.message にも案内があれば併せて伝えて');
+  });
+});
+
+describe('get_generation_status: プラン以外の失敗ファイルには、そのファイルの code / message を見させる (PRJ-3-2563)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it.each([
+    [
+      '上位が PLAN 系',
+      'PLAN_PAGE_LIMIT_EXCEEDED',
+      [{ fileName: 'a.pdf', code: 'RENDER_FAILED', message: 'x' }],
+    ],
+    [
+      '上位が総称・混在',
+      'FILE_GENERATION_FAILED',
+      [
+        {
+          fileName: 'a.pdf',
+          code: 'PLAN_PAGE_LIMIT_EXCEEDED',
+          message: 'limit',
+        },
+        { fileName: 'b.pdf', code: 'RENDER_FAILED', message: 'x' },
+      ],
+    ],
+  ])(
+    '%s: 上位の error.code / error.message に従わせない',
+    async (_l, code, failedFiles) => {
+      mockFetch.mockResolvedValue(
+        jsonRes({
+          requestId: 'AbC123dEf456GhI7',
+          status: 'failed',
+          files: [],
+          error: { code, message: 'top' },
+          failedFiles,
+        }),
+      );
+      const result = await handleGetGenerationStatus({
+        requestId: 'AbC123dEf456GhI7',
+      });
+      const text = result.content[0].text;
+      expect(text).toContain(
+        '失敗したファイルは、その code / message に従って対処して',
+      );
+      expect(text).not.toContain('error.code / error.message に従って');
+    },
+  );
+});

@@ -1,6 +1,6 @@
 {
   "name": "reportflow-mcp",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "mcpName": "io.github.re-port-flow/reportflow-mcp",
   "description": "Re:port Flow MCP Server - PDF generation from templates for Claude and AI agents",
   "keywords": [
@@ -54,19 +54,19 @@
     "lint:package-scripts": "node scripts/check-package-scripts.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/node": "^2.1.1",
-    "@modelcontextprotocol/server": "^2.3.1",
+    "@modelcontextprotocol/node": "^2.1.2",
+    "@modelcontextprotocol/server": "^2.4.0",
     "@napi-rs/keyring": "^1.2.0",
     "cors": "^2.8.5",
     "express": "^4.22.3",
     "express-rate-limit": "8.7.1",
     "open": "^8.4.2",
-    "zod": "^4.2.0"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
     "@eslint/js": "^9.18.0",
-    "@modelcontextprotocol/client": "^2.3.1",
+    "@modelcontextprotocol/client": "^2.4.0",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/jest": "^30.0.0",
@@ -86,29 +86,31 @@
   },
   "resolutions": {
     "flatted": "^3.4.2",
-    "minimatch": "^9.0.7",
-    "brace-expansion": "^2.1.7",
+    "minimatch": "^11.0.1",
+    "brace-expansion": "^5.0.12",
     "@eslint/eslintrc/ajv": "^6.14.0",
     "js-yaml": "^4.3.2",
-    "qs": "^6.16.0",
+    "qs": "~6.16.2",
     "diff": "^4.0.4",
     "@eslint/plugin-kit": "^0.3.4",
     "proxy-addr": "^2.0.8",
-    "body-parser": "^1.20.6"
+    "body-parser": "^1.20.9",
+    "glob": "^14.0.2"
   },
   "overrides": {
     "flatted": "^3.4.2",
-    "minimatch": "^9.0.7",
-    "brace-expansion": "^2.1.7",
+    "minimatch": "^11.0.1",
+    "brace-expansion": "^5.0.12",
     "@eslint/eslintrc": {
       "ajv": "^6.14.0"
     },
     "js-yaml": "^4.3.2",
-    "qs": "^6.16.0",
+    "qs": "~6.16.2",
     "diff": "^4.0.4",
     "@eslint/plugin-kit": "^0.3.4",
     "proxy-addr": "^2.0.8",
-    "body-parser": "^1.20.6"
+    "body-parser": "^1.20.9",
+    "glob": "^14.0.2"
   },
   "jest": {
     "coverageProvider": "v8",

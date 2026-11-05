@@ -1,4 +1,14 @@
 import { getGenerationStatus, type GenerationStatusResult } from '../client.js';
+import {
+  buildStatusCard,
+  safeCard,
+  type SlackMeta,
+} from '../slack/status-card.js';
+import {
+  failedFilesOf,
+  planBreakdownOf,
+  retryAfterSecondsOf,
+} from '../generation-plan.js';
 
 /**
  * get_generation_status (PRJ-3-2018)。
@@ -25,11 +35,17 @@ export type GetGenerationStatusDeps = {
    *        出力履歴画面) を案内する。
    */
   mode?: 'stdio' | 'http';
+  /**
+   * Slack opt-in 時だけ true (PRJ-3-2563)。成功時に `_meta.slack.blocks` へ状態カードを
+   * 足す。text の応答は変えない。失敗 (isError) にはカードを付けない。
+   */
+  slackBlocks?: boolean;
 };
 
 export type GetGenerationStatusResult = {
   content: [{ type: 'text'; text: string }];
   isError?: true;
+  _meta?: SlackMeta;
 };
 
 /**
@@ -38,10 +54,71 @@ export type GetGenerationStatusResult = {
  * ので、再生成ではなく利用者への伝達を促す (instructions.ts の「プラン・上限の
  * 失敗はアップグレードの案内を伝える」と揃える)。
  */
-const failedAction = (code: string | undefined): string =>
-  code !== undefined && /(^|_)PLAN(_|$)/.test(code)
-    ? 'プランの上限や設定による失敗です。入力を直して再生成しても解消しないため、error.message をそのまま利用者に伝えてください (アップグレードの案内があれば含めてください)。'
-    : 'error.code / error.message に従って対処してください (入力の誤りなら直してから生成をやり直してください)。';
+const PLAN_ACTION =
+  'プランの上限や設定による失敗です。入力を直して再生成しても解消しないため、error.message をそのまま利用者に伝えてください (アップグレードの案内があれば含めてください)。';
+const OTHER_ACTION =
+  'error.code / error.message に従って対処してください (入力の誤りなら直してから生成をやり直してください)。';
+/**
+ * ファイルごとの code でプラン起因と判定したときの案内。理由とアップグレードの
+ * 案内は failedFiles 側の message に入り、上位の error.message は総称
+ * (例: "All N files failed to generate.") なので、伝える message を取り違えない。
+ */
+const PLAN_ACTION_PER_FILE =
+  'プランの上限や設定による失敗です。入力を直して再生成しても解消しないため、failedFiles のうち code が PLAN を含むものの message をそのまま利用者に伝えてください (アップグレードの案内があれば含めてください)。';
+/**
+ * failed の案内。プラン起因の理由が入っている場所ごとに、伝えさせる message を
+ * 選ぶ (planBreakdownOf)。プラン以外の失敗が残っていれば、その直し方も必ず足す。
+ *
+ * - ファイル側に PLAN 系がある → failedFiles のうち PLAN 系の message を伝える
+ * - 上位だけが PLAN 系 → error.message を伝える (単一出力の失敗、または上位だけが PLAN 系)
+ * - PLAN 系でない失敗 (ファイル側、または failedFiles 無しで上位も PLAN 系でない) → 直して再生成
+ */
+const failedAction = (status: GenerationStatusResult): string => {
+  const { topIsPlan, planFiles, otherFiles } = planBreakdownOf(status);
+  // 上位とファイル側の両方が PLAN 系なら、両方の message を伝えさせる
+  // (上位にもアップグレードの案内が入り得る)。
+  const planAction =
+    planFiles > 0
+      ? topIsPlan
+        ? `${PLAN_ACTION_PER_FILE} 上位の error.message にも案内があれば併せて伝えてください。`
+        : PLAN_ACTION_PER_FILE
+      : topIsPlan
+        ? PLAN_ACTION
+        : '';
+  if (planAction === '') return OTHER_ACTION;
+  // プラン起因と入力の誤り等が混ざっている。片方の案内だけにすると、
+  // もう片方の失敗の直し方が消える。
+  return otherFiles > 0
+    ? `${planAction} プラン以外の理由 (failedFiles の code が PLAN を含まないもの) で失敗したファイルは、その code / message に従って対処してください (入力の誤りなら直してから生成をやり直してください)。`
+    : planAction;
+};
+
+/**
+ * completed の一部失敗で、プラン起因の失敗があるときの案内 (planBreakdownOf)。
+ * PLAN を含まない失敗だけなら従来どおり何も足さない。
+ */
+const partialPlanAction = (status: GenerationStatusResult): string => {
+  const { topIsPlan, planFiles, otherFiles } = planBreakdownOf(status);
+  // failed 側 (failedAction) と同じく、上位とファイル側の両方が PLAN 系なら
+  // 上位の error.message も伝えさせる。
+  const alsoTop = topIsPlan
+    ? ' 上位の error.message にも案内があれば併せて伝えてください。'
+    : '';
+  if (planFiles > 0 && otherFiles === 0) {
+    return ` 失敗したファイルはプランの上限や設定によるもので、入力を直して再生成しても解消しないため、failedFiles の message をそのまま利用者に伝えてください (アップグレードの案内があれば含めてください)。${alsoTop}`;
+  }
+  if (planFiles > 0) {
+    return ` failedFiles の code が PLAN を含むファイルはプランの上限や設定による失敗で、再生成しても解消しないため message を利用者に伝えてください。${alsoTop} それ以外は入力の誤りなら直してから生成をやり直してください。`;
+  }
+  if (topIsPlan) {
+    return ` error.code がプランの上限や設定によるもので、入力を直して再生成しても解消しないため、error.message をそのまま利用者に伝えてください (アップグレードの案内があれば含めてください)。${
+      otherFiles > 0
+        ? ' failedFiles の失敗は、入力の誤りなら直してから生成をやり直してください。'
+        : ''
+    }`;
+  }
+  return '';
+};
 
 const nextStep = (
   status: GenerationStatusResult,
@@ -51,14 +128,16 @@ const nextStep = (
     case 'queued':
     case 'processing':
       return `生成中です。${
-        status.retryAfterSeconds !== undefined
-          ? `${status.retryAfterSeconds} 秒後に`
+        retryAfterSecondsOf(status) !== undefined
+          ? `${retryAfterSecondsOf(status)} 秒後に`
           : '数秒おいてから'
       }同じ requestId で get_generation_status を再度呼び出してください。`;
     case 'completed': {
+      // 件数はカードと同じく failedFilesOf (契約外の要素を捨てた後) で数える。
+      const failedCount = failedFilesOf(status).length;
       const partial =
-        status.failedFiles && status.failedFiles.length > 0
-          ? ` ただし ${status.failedFiles.length} 件は生成に失敗しています (failedFiles の code / message を参照)。`
+        failedCount > 0
+          ? ` ただし ${failedCount} 件は生成に失敗しています (failedFiles の code / message を参照)。${partialPlanAction(status)}`
           : '';
       return mode === 'http'
         ? `生成が完了しました。生成ツールの応答にある url (Web アプリの出力履歴画面) から確認・ダウンロードできます。${partial}`
@@ -66,12 +145,12 @@ const nextStep = (
     }
     case 'failed': {
       const perFile =
-        status.failedFiles && status.failedFiles.length > 0
+        failedFilesOf(status).length > 0
           ? ` ファイルごとの理由は failedFiles の code / message を参照してください。`
           : '';
       return `生成に失敗しました${
         status.error ? ` (${status.error.code}: ${status.error.message})` : ''
-      }。${perFile}${failedAction(status.error?.code)}同じ requestId をダウンロードしても取得できません。`;
+      }。${perFile}${failedAction(status)}同じ requestId をダウンロードしても取得できません。`;
     }
     default:
       // 契約外の status。推測で案内せず、値だけを返す。
@@ -86,6 +165,10 @@ export const handleGetGenerationStatus = async (
   const mode = deps.mode ?? 'stdio';
   try {
     const status = await getGenerationStatus(input.requestId);
+    const card =
+      deps.slackBlocks === true
+        ? safeCard(() => buildStatusCard(status))
+        : null;
     return {
       content: [
         {
@@ -93,6 +176,7 @@ export const handleGetGenerationStatus = async (
           text: `${nextStep(status, mode)}\n\n${JSON.stringify(status, null, 2)}`,
         },
       ],
+      ...(card !== null ? { _meta: card } : {}),
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

@@ -47,8 +47,35 @@ import {
  */
 export const WORKSPACE_ROLE_TIMEOUT_MS = 5_000;
 
-/** 解決結果のキャッシュ TTL (ST-1 判断4: 60 秒 / token 単位 / 単一フライト)。 */
-export const WORKSPACE_ROLE_CACHE_TTL_MS = 60_000;
+/**
+ * 解決結果のキャッシュ TTL (ST-1 判断4: 5 分 / token 単位 / 単一フライト)。
+ *
+ * 当初は 60 秒だったが、MCP 要求ごとに `GET /workspace/list` を引く件数が本番で
+ * 1 日約 1 万件に達したため 5 分へ延ばした (PRJ-3-2449)。上流 API 側にも同じ
+ * ロール条件がある (PRJ-3-1586 / ST-2) ので、降格後に最大 5 分カタログへ残った
+ * ツールを呼んでも上流で拒否される。
+ *
+ * 昇格は逆向きに遅れる (古いロールのままカタログに出ず、SDK が無効なものとして
+ * 拒否する)。HTTP は `tools/call` / `resources/read` の対象がキャッシュ上のロールで
+ * 足りないときだけ factory より前に `fresh: true` で 1 回引き直す
+ * (`refreshRoleForCalls`) ので、昇格後の呼び出し・読み取りは最大 30 秒で通る
+ * (そのトークンの最後の上流取得・引き直しから 30 秒以内は上流を叩かないため /
+ * `WORKSPACE_ROLE_FRESH_COOLDOWN_MS`)。
+ * `tools/list` / `resources/list` への反映は最大 5 分。stdio は
+ * `authenticate force=true` でキャッシュを捨てれば即時に反映される。
+ */
+export const WORKSPACE_ROLE_CACHE_TTL_MS = 300_000;
+
+/**
+ * `fresh: true` の引き直しを抑える間隔 (PRJ-3-2449)。直近この時間以内に上流から
+ * 取った結果があれば、`fresh` でも上流を叩かずにそれを返す。
+ *
+ * 引き直しは「キャッシュ上のロールで足りない呼び出し」で起きるため、昇格していない
+ * 利用者が権限外のツールを繰り返し呼ぶと、そのたびに上流を叩いてしまう (A2A には
+ * レート制限が無い)。この間隔でトークンごとの上限を付ける。昇格の反映は最大でも
+ * この時間で済む。
+ */
+export const WORKSPACE_ROLE_FRESH_COOLDOWN_MS = 30_000;
 
 /**
  * キャッシュ上限。HTTP モードはリクエスト毎に解決するため、放置するとトークンの
@@ -79,10 +106,21 @@ export type WorkspaceAuthorization = {
   resolution: RoleResolution;
 };
 
-type CacheEntry = { expiresAt: number; resolution: RoleResolution };
+type CacheEntry = {
+  expiresAt: number;
+  /** 上流から取得した時刻。`fresh` のクールダウン判定に使う。 */
+  fetchedAt: number;
+  resolution: RoleResolution;
+};
 
 const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<RoleResolution>>();
+/**
+ * `fresh` で上流へ問い合わせた時刻 (結果を問わない)。失敗はキャッシュに書かない
+ * (負キャッシュしない) ので、クールダウンを `fetchedAt` だけで判定すると、引き直しが
+ * 失敗し続けたときに上限が外れる。試行の時刻を別に持って、失敗の経路にも上限を付ける。
+ */
+const lastFreshAttemptAt = new Map<string, number>();
 
 /**
  * キャッシュキー。**アクセストークンそのものは持たない** ——
@@ -98,6 +136,11 @@ const pruneCache = (now: number): void => {
   for (const [key, entry] of cache) {
     if (entry.expiresAt <= now) cache.delete(key);
   }
+  for (const [key, attemptedAt] of lastFreshAttemptAt) {
+    if (now - attemptedAt >= WORKSPACE_ROLE_FRESH_COOLDOWN_MS) {
+      lastFreshAttemptAt.delete(key);
+    }
+  }
   // Map は挿入順を保つので、先頭が最も古い。
   while (cache.size > MAX_CACHE_ENTRIES) {
     const oldest = cache.keys().next();
@@ -110,6 +153,7 @@ const pruneCache = (now: number): void => {
 export const clearWorkspaceRoleCache = (): void => {
   cache.clear();
   inflight.clear();
+  lastFreshAttemptAt.clear();
 };
 
 const bearerTokenOf = (headers: Record<string, string>): string | undefined => {
@@ -232,6 +276,14 @@ const fetchWorkspaceRole = async (
 };
 
 /**
+ * `fresh: true` はキャッシュを読まずに上流から引き直す (結果は通常どおりキャッシュに書く)。
+ * HTTP の `refreshRoleForCalls` が、`tools/call` / `resources/read` の対象がキャッシュ上の
+ * `resolved` ロールで足りないときだけ使う (PRJ-3-2449)。TTL 内に昇格した利用者を、
+ * 古いロールのまま止めないため。
+ */
+export type ResolveOptions = { fresh?: boolean };
+
+/**
  * 現在の認証コンテキスト (HTTP は per-request の Bearer、stdio は保存トークン) の
  * ワークスペース実効ロールを解決する。**例外を投げない**。
  *
@@ -243,6 +295,7 @@ const fetchWorkspaceRole = async (
  */
 export const resolveWorkspaceRole = async (
   mode: 'stdio' | 'http',
+  options: ResolveOptions = {},
 ): Promise<RoleResolution> => {
   // **HTTP モードで stdio のトークンストアへ落ちない。**
   //
@@ -280,8 +333,24 @@ export const resolveWorkspaceRole = async (
   const now = Date.now();
   pruneCache(now);
 
+  // `fresh` は、同じキーの引き直しが走っていればそれに合流する。クールダウン判定を
+  // 先にすると、並列の 2 本目が 1 本目の完了を待たずに古いキャッシュを返してしまう。
+  const pendingFresh = options.fresh === true ? inflight.get(key) : undefined;
+  if (pendingFresh) return pendingFresh;
+
   const cached = cache.get(key);
-  if (cached && cached.expiresAt > now) return cached.resolution;
+  if (cached && cached.expiresAt > now) {
+    // `fresh` でも、直近 WORKSPACE_ROLE_FRESH_COOLDOWN_MS 以内に上流から取った結果なら
+    // それを使う。本当に権限が足りない呼び出しを繰り返されても、上流への問い合わせは
+    // トークンごとにこの間隔で 1 回に抑えられる (A2A にはレート制限が無い)。
+    const lastFetched = Math.max(
+      cached.fetchedAt,
+      lastFreshAttemptAt.get(key) ?? 0,
+    );
+    const withinCooldown = now - lastFetched < WORKSPACE_ROLE_FRESH_COOLDOWN_MS;
+    if (options.fresh !== true || withinCooldown) return cached.resolution;
+    lastFreshAttemptAt.set(key, now);
+  }
 
   const pending = inflight.get(key);
   if (pending) return pending;
@@ -289,8 +358,13 @@ export const resolveWorkspaceRole = async (
   const request = fetchWorkspaceRole(token, workspaceId)
     .then((resolution) => {
       if (resolution.status === 'resolved') {
+        const fetchedAt = Date.now();
+        // 引き直しで既存キーを上書きするときも挿入順を新しくする (pruneCache は
+        // 挿入順の古いものから捨てるため)。
+        cache.delete(key);
         cache.set(key, {
-          expiresAt: Date.now() + WORKSPACE_ROLE_CACHE_TTL_MS,
+          expiresAt: fetchedAt + WORKSPACE_ROLE_CACHE_TTL_MS,
+          fetchedAt,
           resolution,
         });
       }
@@ -318,7 +392,8 @@ export const capabilitiesFor = (
  */
 export const resolveWorkspaceAuthorization = async (
   mode: 'stdio' | 'http',
+  options: ResolveOptions = {},
 ): Promise<WorkspaceAuthorization> => {
-  const resolution = await resolveWorkspaceRole(mode);
+  const resolution = await resolveWorkspaceRole(mode, options);
   return { capabilities: capabilitiesFor(resolution), resolution };
 };

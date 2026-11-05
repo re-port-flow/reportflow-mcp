@@ -203,3 +203,46 @@ describe('handleGeneratePdfsAsync', () => {
     });
   });
 });
+
+describe('generate_pdfs_async: Slack 状態カード (PRJ-3-2563)', () => {
+  const generated = {
+    requestId: 'AbCd1234EfGh5678',
+    url: 'https://re-port-flow.com/ws-1/templates/d-1/outputs?requestId=AbCd1234EfGh5678',
+    files: [],
+  };
+  const input = { designId: 'd-1', version: 1, contents: [] };
+  const noPlan = () => Promise.resolve(undefined as never);
+
+  it('slackCard を渡さなければ _meta を付けない (既存クライアント)', async () => {
+    mockJsonResponse(generated);
+    const result = await handleGeneratePdfsAsync(input, {
+      resolvePlanNotice: noPlan,
+    });
+    expect(result._meta).toBeUndefined();
+  });
+
+  it('slackCard を渡すと text は変えずに受付カードを足す', async () => {
+    mockJsonResponse(generated);
+    const without = await handleGeneratePdfsAsync(input, {
+      resolvePlanNotice: noPlan,
+    });
+    mockJsonResponse(generated);
+    const withCard = await handleGeneratePdfsAsync(input, {
+      resolvePlanNotice: noPlan,
+      slackCard: { allowedLinkHosts: ['re-port-flow.com'] },
+    });
+    expect(withCard.content).toEqual(without.content);
+    const blocks = withCard._meta?.slack.blocks ?? [];
+    expect(JSON.stringify(blocks)).toContain('tool:get_generation_status');
+  });
+
+  it('生成失敗 (isError) にはカードを付けない', async () => {
+    mockJsonResponse({ message: 'bad' }, 400);
+    const result = await handleGeneratePdfsAsync(input, {
+      resolvePlanNotice: noPlan,
+      slackCard: { allowedLinkHosts: ['re-port-flow.com'] },
+    });
+    expect(result.isError).toBe(true);
+    expect(result._meta).toBeUndefined();
+  });
+});

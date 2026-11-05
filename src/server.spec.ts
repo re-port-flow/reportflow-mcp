@@ -466,6 +466,84 @@ describe('Apps SDK widget wiring (PR-2)', () => {
     await close();
   });
 
+  describe('Slack 状態カードの opt-in (PRJ-3-2563)', () => {
+    const SLACK_TOOLS = ['generate_pdfs_async', 'get_generation_status'];
+    const connectSlack = async (
+      mode: 'stdio' | 'http',
+      enableSlackBlocks: boolean,
+    ) => {
+      const server = createMcpServer({
+        mode,
+        enableSlackBlocks,
+        ...adminAuthorizationOptions(),
+      });
+      const client = new Client({ name: 'test-client', version: '0.0.0' });
+      const [clientTransport, serverTransport] =
+        InMemoryTransport.createLinkedPair();
+      await Promise.all([
+        server.connect(serverTransport),
+        client.connect(clientTransport),
+      ]);
+      return { client, close: () => client.close() };
+    };
+    const slackMetaOf = (tool: unknown): unknown =>
+      (tool as { _meta?: Record<string, unknown> })._meta?.['slack'];
+
+    it('http + slack 有効: 対象 2 ツールだけ supportsBlockKit を宣言する', async () => {
+      const { client, close } = await connectSlack('http', true);
+      const { tools } = await client.listTools();
+      for (const tool of tools) {
+        if (SLACK_TOOLS.includes(tool.name)) {
+          expect(slackMetaOf(tool)).toEqual({ supportsBlockKit: true });
+        } else {
+          expect(slackMetaOf(tool)).toBeUndefined();
+        }
+      }
+      await close();
+    });
+
+    it('tools/call: 有効時は結果の _meta.slack.blocks がクライアントまで届き、無効時は届かない', async () => {
+      const mocked = jest.requireMock('./client') as {
+        getGenerationStatus: jest.Mock;
+      };
+      mocked.getGenerationStatus.mockResolvedValue({
+        requestId: 'AbCd1234EfGh5678',
+        status: 'processing',
+        files: [],
+      });
+      for (const enabled of [true, false]) {
+        const { client, close } = await connectSlack('http', enabled);
+        const result = (await client.callTool({
+          name: 'get_generation_status',
+          arguments: { requestId: 'AbCd1234EfGh5678' },
+        })) as { _meta?: Record<string, unknown>; isError?: boolean };
+        expect(result.isError).toBeFalsy();
+        const slack = result._meta?.['slack'] as
+          | { blocks?: unknown[] }
+          | undefined;
+        if (enabled) {
+          expect(slack?.blocks?.length).toBeGreaterThan(0);
+        } else {
+          expect(slack).toBeUndefined();
+        }
+        await close();
+      }
+    });
+
+    it.each([
+      ['http (slack 無効)', 'http'],
+      ['stdio (slack 有効を渡しても無視)', 'stdio'],
+    ] as const)(
+      '%s: どのツールにも Slack の _meta を付けない',
+      async (_l, mode) => {
+        const { client, close } = await connectSlack(mode, mode === 'stdio');
+        const { tools } = await client.listTools();
+        for (const tool of tools) expect(slackMetaOf(tool)).toBeUndefined();
+        await close();
+      },
+    );
+  });
+
   it('stdio モード: widget リソースも search の _meta も登録されない', async () => {
     const { client, close } = await connect('stdio');
     const { resources } = await client.listResources();

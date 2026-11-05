@@ -3,6 +3,7 @@ import cors from 'cors';
 import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 import { isIP } from 'net';
 import { createHash, randomUUID } from 'crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   CLIENT_CAPABILITIES_META_KEY,
   CLIENT_INFO_META_KEY,
@@ -36,8 +37,16 @@ import {
   resolveAccessServiceAuth,
 } from './oauth-upstream.js';
 import { createMcpServer } from './server.js';
+import type { WorkspaceAuthorizationResolver } from './tool-guard.js';
+import {
+  requiredCapabilityForResource,
+  requiredCapabilityForTool,
+  type WorkspaceCapability,
+} from './workspace-permission.js';
+import { DESIGNS_RESOURCE_URI } from './resources/designs.js';
 import {
   resolveWorkspaceAuthorization,
+  type ResolveOptions,
   type WorkspaceAuthorization,
 } from './workspace-role.js';
 import {
@@ -285,7 +294,7 @@ export type BuildHttpAppOptions = {
    * リクエストごとのワークスペース権限解決 (PRJ-3-1584 / ST-3)。
    * 既定は本番の resolver。テストがロールを固定するための差し替え口。
    */
-  resolveAuthorization?: () => Promise<WorkspaceAuthorization>;
+  resolveAuthorization?: WorkspaceAuthorizationResolver;
   /**
    * `/` と `/mcp` のレート制限 (PRJ-3-2258)。未指定時は本番の窓と上限。
    * テストが少ない回数で 429 を踏むための差し替え口。無効化はしない。
@@ -361,6 +370,83 @@ const mcpBearerRateLimitKey = (req: Request): string => {
   return `bearer:${createHash('sha256').update(token).digest('hex')}`;
 };
 
+/** `design-parameters` リソースの URI (`reportflow://designs/{designId}/parameters`)。 */
+const DESIGN_PARAMETERS_URI_PATTERN =
+  /^reportflow:\/\/designs\/[^/]+\/parameters$/;
+
+/** `resources/read` の URI を、`RESOURCE_CAPABILITIES` のリソース名へ写す。 */
+const resourceNameOfUri = (uri: string): string | undefined => {
+  if (uri === DESIGNS_RESOURCE_URI) return 'designs';
+  if (DESIGN_PARAMETERS_URI_PATTERN.test(uri)) return 'design-parameters';
+  return undefined;
+};
+
+/**
+ * JSON-RPC body (単発 / batch) の `tools/call` / `resources/read` が要求する
+ * capability を列挙する。形が合わないもの・未知のツールやリソースは無視する
+ * (検証と not found は SDK が返す。ここは引き直しの判断だけ)。
+ */
+export const requiredCapabilitiesOf = (
+  body: unknown,
+): WorkspaceCapability[] => {
+  const messages = Array.isArray(body) ? body : [body];
+  const required: WorkspaceCapability[] = [];
+  for (const message of messages) {
+    if (message === null || typeof message !== 'object') continue;
+    const { method, params } = message as {
+      method?: unknown;
+      params?: unknown;
+    };
+    if (params === null || typeof params !== 'object') continue;
+    try {
+      if (method === 'tools/call') {
+        const name = (params as { name?: unknown }).name;
+        if (typeof name === 'string') {
+          required.push(requiredCapabilityForTool(name));
+        }
+      } else if (method === 'resources/read') {
+        const uri = (params as { uri?: unknown }).uri;
+        const resourceName =
+          typeof uri === 'string' ? resourceNameOfUri(uri) : undefined;
+        if (resourceName !== undefined) {
+          required.push(requiredCapabilityForResource(resourceName));
+        }
+      }
+    } catch {
+      // 未知のツール名は SDK が not found で返す。引き直しても意味が無い。
+    }
+  }
+  return required;
+};
+
+/**
+ * `tools/call` / `resources/read` の対象がキャッシュ上のロールでは足りないときだけ、
+ * 上流からロールを 1 回引き直してキャッシュを更新する (PRJ-3-2449)。
+ *
+ * per-request factory はキャッシュ上の capabilities でカタログを組み、権限外の
+ * ツール・リソースを `disable()` する。SDK は無効なものへの要求を call ガードより
+ * **前に** 拒否するので、引き直しは factory より前 (ここ) でしか効かない。TTL を
+ * 5 分へ延ばしたため、これが無いと昇格 (READ → WRITE 等) の反映が最大 5 分遅れる。
+ *
+ * 引き直すのは `resolved` のときだけ (他の status はキャッシュされない)。引き直しが
+ * 失敗してもキャッシュは変わらず、factory は従来どおりキャッシュ上のロールで組む。
+ * 上流への問い合わせはトークンごとに `WORKSPACE_ROLE_FRESH_COOLDOWN_MS` に 1 回までに
+ * 抑えられる (`resolveWorkspaceRole` 側。A2A にはレート制限が無いため)。
+ */
+export const refreshRoleForCalls = async (
+  body: unknown,
+  resolveAuthorization: WorkspaceAuthorizationResolver,
+): Promise<void> => {
+  const required = requiredCapabilitiesOf(body);
+  // 公開のツール・リソースだけなら、ロールに関係なく通るので解決自体をしない。
+  if (required.every((capability) => capability === 'public')) return;
+  const current = await resolveAuthorization();
+  if (current.resolution.status !== 'resolved') return;
+  if (required.some((capability) => !current.capabilities.has(capability))) {
+    await resolveAuthorization({ fresh: true });
+  }
+};
+
 /**
  * Express アプリケーションを構築して返す。listen は呼ばない。
  * テストや埋め込み利用を想定。
@@ -370,7 +456,32 @@ export const buildHttpApp = (
 ): express.Express => {
   const resolveAuthorization =
     options.resolveAuthorization ??
-    (() => resolveWorkspaceAuthorization('http'));
+    ((resolveOptions?: ResolveOptions) =>
+      resolveWorkspaceAuthorization('http', resolveOptions));
+
+  // 1 リクエストの中では解決結果を 1 回だけ使い回す (PRJ-3-2449)。
+  // `resolveWorkspaceRole` は `resolved` しかキャッシュしないので、引き直しの判定
+  // (`refreshRoleForCalls`) と factory がそれぞれ解決すると、`forbidden` /
+  // `unavailable` のトークンでは上流への問い合わせが直列に増える。`fresh` の結果は
+  // `resolved` のときだけリクエストの値を置き換える (失敗でカタログを狭めない)。
+  const requestAuthorization = new AsyncLocalStorage<{
+    value?: Promise<WorkspaceAuthorization>;
+  }>();
+  const resolveForRequest: WorkspaceAuthorizationResolver = async (
+    resolveOptions,
+  ) => {
+    const scope = requestAuthorization.getStore();
+    if (scope === undefined) return resolveAuthorization(resolveOptions);
+    if (resolveOptions?.fresh === true) {
+      const refreshed = await resolveAuthorization(resolveOptions);
+      if (refreshed.resolution.status === 'resolved') {
+        scope.value = Promise.resolve(refreshed);
+      }
+      return refreshed;
+    }
+    scope.value ??= resolveAuthorization();
+    return scope.value;
+  };
   const app = express();
 
   // Cloudflare Access の Service Auth (staging のみ。詳細は oauth-upstream.ts)。
@@ -392,7 +503,9 @@ export const buildHttpApp = (
   //   (PRM・AS metadata・openai-apps-challenge) は公開メタデータで rebinding と
   //   無関係のため適用外。OAuth proxy (/authorize /token /register) は
   //   リダイレクト・プロキシ経路を壊さないため適用外 (Bearer 発行前の経路で
-  //   ambient credential も無い) (PRJ-3-1115)。
+  //   ambient credential も無い) (PRJ-3-1115)。/userinfo も適用外: 呼ぶのは
+  //   Slack 等のクライアントの*サーバー*で、Bearer を明示的に付けて送る
+  //   (Cookie 等の ambient credential を使わない) ため rebinding の影響を受けない。
   const mcpEndpointGuard = (
     req: Request,
     res: Response,
@@ -498,7 +611,8 @@ export const buildHttpApp = (
       .send(FAVICON_SVG);
   });
 
-  // RFC 9728 Protected Resource Metadata
+  // RFC 9728 §3.1 derives a distinct metadata URL for each resource path.
+  // Keep the existing pathless endpoint and its resource identifier unchanged.
   app.get(
     '/.well-known/oauth-protected-resource',
     (_req: Request, res: Response) => {
@@ -507,6 +621,22 @@ export const buildHttpApp = (
         .json(buildProtectedResourceMetadata());
     },
   );
+  // RFC 9728 §3.3 requires `resource` to exactly identify the resource whose
+  // path was used to derive this metadata URL.
+  app.get(
+    '/.well-known/oauth-protected-resource/mcp',
+    (_req: Request, res: Response) => {
+      res
+        .set('Cache-Control', 'no-cache')
+        .json(buildProtectedResourceMetadata(`${MCP_RESOURCE_URL}/mcp`));
+    },
+  );
+
+  // MCP はクロール対象の Web サイトではないため、robots.txt を配信して
+  // エンドポイントや OAuth URL のインデックス登録を避ける。
+  app.get('/robots.txt', (_req: Request, res: Response) => {
+    res.status(200).type('text/plain').send('User-agent: *\nDisallow: /\n');
+  });
 
   // A2A Agent Card (A2A v1.0 §8.2。IANA 登録の well-known URI)。
   // 公開メタデータなので Host 検証の対象外 (PRM と同じ扱い)。
@@ -555,6 +685,7 @@ export const buildHttpApp = (
   // - GET  /authorize  → 上流 /oauth/authorize へ 302 リダイレクト
   // - POST /token      → 上流 /oauth/token へ proxy (form / json 両対応、JSON に変換して転送)
   // - POST /register   → 上流 /oauth/register (DCR) へ proxy
+  // - GET  /userinfo   → 上流 /oauth/userinfo へ proxy (Bearer をそのまま転送)
 
   // RFC 8414 Authorization Server Metadata
   app.get(
@@ -727,6 +858,66 @@ export const buildHttpApp = (
     });
   });
 
+  // /userinfo: 上流 /oauth/userinfo (OIDC Core §5.3) へ Bearer をそのまま転送する。
+  //
+  // **なぜ MCP ホストに置くのか。** Slack の manual_auth のように、クライアントの
+  // *サーバー* が token 取得後に UserInfo を叩いて利用者を識別する実装がある
+  // (identity_config.url)。staging の上流 `https://stg.re-port-flow.com/api/v1` は
+  // Cloudflare Access の裏に居て、身元の無いサーバー間要求は 302 でログイン画面へ
+  // 送られる (2026-10-31 実測)。/authorize /token /register と同じく MCP ホストで
+  // 中継すれば、Access の Service Auth を載せて通せる。production は Access の裏に
+  // 居ないので従来どおり素通しになる。
+  //
+  // 転送するのは `Authorization` だけ。token は MCP の /token が上流から取ってきた
+  // もの (同じ認可サーバー) なので、上流の UserInfo がそのまま検証する。
+  // ここでは token を検査も記録もしない。
+  app.get('/userinfo', (req: Request, res: Response) => {
+    const upstream = new URL(`${REPORTFLOW_OAUTH_ISSUER_URL}/oauth/userinfo`);
+    const authorization = req.get('Authorization');
+
+    const handle = async (): Promise<void> => {
+      const result = await callOAuthUpstream({
+        endpoint: 'userinfo',
+        url: upstream.toString(),
+        method: 'GET',
+        // OIDC Core §5.3.2: 成功応答は `sub` を必ず含む。
+        requiredField: 'sub',
+        // RFC 6750 §3: Bearer エラーは本文なし + WWW-Authenticate で返り得る。
+        allowEmptyUnauthorized: true,
+        headers: authorization ? { Authorization: authorization } : {},
+        accessAuth: accessServiceAuth,
+      });
+
+      if (!result.ok) {
+        respondProxyFailure(res, 'OAuth userinfo proxy failed');
+        return;
+      }
+
+      // Content-Type を上流から写さない理由は /token 側と同じ。利用者の
+      // 識別子・メールを含むので保存させない。401 / 403 の Bearer challenge
+      // (WWW-Authenticate) はクライアントが失敗の種類を判断する材料なので中継する。
+      res
+        .status(result.status)
+        .set('Cache-Control', 'no-store')
+        .set('Pragma', 'no-cache');
+      if (result.wwwAuthenticate !== undefined) {
+        res.set('WWW-Authenticate', result.wwwAuthenticate);
+      }
+      if (result.body === '') {
+        res.end();
+        return;
+      }
+      res.set('Content-Type', 'application/json').send(result.body);
+    };
+
+    handle().catch((err: unknown) => {
+      console.error(
+        `[reportflow-mcp] oauth-proxy userinfo handler failed: ${errorNameOf(err)}`,
+      );
+      respondProxyFailure(res, 'OAuth userinfo proxy failed');
+    });
+  });
+
   // MCP ハンドラ本体 (2026-07-28 + 2025-era の両世代を単一エンドポイントで処理)。
   // - 2026-07-28 (per-request _meta envelope): createMcpHandler が per-request に処理。
   //   server/discover / resultType / ttlMs・cacheScope / Mcp-Method・Mcp-Name 検証も
@@ -743,6 +934,11 @@ export const buildHttpApp = (
       const enableWidgets =
         ctx.requestInfo != null &&
         new URL(ctx.requestInfo.url).searchParams.get('widgets') === '1';
+      // Slack App は接続 URL を `?slack=1` 付きで設定する (PRJ-3-2563)。
+      // widgets と同じく URL のクエリだけで決め、他のクライアントには出さない。
+      const enableSlackBlocks =
+        ctx.requestInfo != null &&
+        new URL(ctx.requestInfo.url).searchParams.get('slack') === '1';
       // ワークスペース権限をリクエスト単位で解決する (PRJ-3-1584 / ST-3)。
       //
       // factory は `runWithHttpAuth` の AsyncLocalStorage スコープの内側で
@@ -753,14 +949,15 @@ export const buildHttpApp = (
       //
       // Bearer が無いリクエスト (未認証の `tools/list` 等) では解決は
       // `unauthenticated` に落ち、公開ギャラリーツールと静的リソースだけが
-      // 見える (ST-1 判断3)。解決結果は 60 秒キャッシュされるため、
+      // 見える (ST-1 判断3)。解決結果は 5 分キャッシュされるため、
       // 1 セッション中に上流へ大量の問い合わせが飛ぶことはない。
-      const { capabilities } = await resolveAuthorization();
+      const { capabilities } = await resolveForRequest();
       return createMcpServer({
         mode: 'http',
         enableWidgets,
+        enableSlackBlocks,
         capabilities,
-        resolveAuthorization,
+        resolveAuthorization: resolveForRequest,
       });
     },
     {
@@ -813,17 +1010,24 @@ export const buildHttpApp = (
     // MCP 経路は Bearer の有無しか見ず、拒否されたトークンは公開ツールだけの
     // 一覧へ落ちるので、そのまま流すと「ツールが無い」FAILED になり、A2A
     // クライアントがトークンを更新するきっかけ (WWW-Authenticate) を失う。
-    // 解決結果は 60 秒キャッシュされ、直後の factory 呼び出しでも再利用される。
-    const { resolution } = await runWithHttpAuth(
-      { accessToken: token },
-      resolveAuthorization,
-    );
-    if (resolution.status === 'unauthenticated') {
+    // 解決結果は 5 分キャッシュされ、直後の factory 呼び出しでも再利用される。
+    // ここでの解決・引き直し・factory は同じリクエストの解決結果を使い回す。
+    const mcpResponse = await requestAuthorization.run({}, async () => {
+      const { resolution } = await runWithHttpAuth(
+        { accessToken: token },
+        resolveForRequest,
+      );
+      if (resolution.status === 'unauthenticated') return undefined;
+      // MCP 経路 (handleMcp) と同じく、factory がカタログを組む前に昇格を反映する
+      // (PRJ-3-2449)。A2A は handleMcp を通らないので、ここでも呼ぶ。
+      return runWithHttpAuth({ accessToken: token }, async () => {
+        await refreshRoleForCalls(body, resolveForRequest);
+        return mcpHandler.fetch(mcpRequest, { parsedBody: body });
+      });
+    });
+    if (mcpResponse === undefined) {
       return { kind: 'unauthorized' };
     }
-    const mcpResponse = await runWithHttpAuth({ accessToken: token }, () =>
-      mcpHandler.fetch(mcpRequest, { parsedBody: body }),
-    );
     return interpretMcpToolResponse(
       mcpResponse.status,
       mcpResponse.headers.get('content-type'),
@@ -871,10 +1075,9 @@ export const buildHttpApp = (
   });
 
   // MCP Streamable HTTP ハンドラ。'/mcp' と '/' の両方に登録する。
-  // PRM が広告する resource はルート (https://mcp.re-port-flow.com) であり、
-  // RFC 9728 準拠の厳格なクライアント (Smithery / Glama 等) は resource を
-  // エンドポイントとみなしてルートへ initialize を POST するため、ルートにも
-  // 同じハンドラを置いて 404 を防ぐ。OAuth セマンティクス (resource/audience) は不変。
+  // pathless PRM はルート、pathful PRM は /mcp を resource として広告する。
+  // pathless PRM の resource を接続先とする既存クライアントのため、ルートにも
+  // 同じハンドラを置いて 404 を防ぐ。resource の転送・検証は OAuth 経路に委ねる。
   const handleMcp = (req: Request, res: Response): void => {
     // 有効な MCP リクエストは POST (JSON-RPC) / SSE 用 GET (Accept: text/event-stream) /
     // DELETE (旧仕様のセッション終了) のみ。ルート '/' はクローラー/ボット/ヘルスチェックの
@@ -929,11 +1132,20 @@ export const buildHttpApp = (
     // express.json() がパース済みの body を第3引数で渡す (adapter は stream を再読しない)。
     // Bearer トークンは従来どおり AsyncLocalStorage で tools 層へ伝搬する。
     const handle = async (): Promise<void> => {
+      if (token) {
+        await refreshRoleForCalls(
+          normalized.body ?? req.body,
+          resolveForRequest,
+        );
+      }
       await nodeMcpHandler(req, res, normalized.body);
     };
 
+    // 引き直しの判定と factory は、同じリクエストの解決結果を使い回す。
     const dispatched = token
-      ? runWithHttpAuth({ accessToken: token }, handle)
+      ? runWithHttpAuth({ accessToken: token }, () =>
+          requestAuthorization.run({}, handle),
+        )
       : handle();
 
     dispatched.catch((err: unknown) => {

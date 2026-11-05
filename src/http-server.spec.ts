@@ -12,10 +12,13 @@ import {
   MCP_HTTP_RATE_LIMIT_MAX,
   MCP_HTTP_RATE_LIMIT_WINDOW_MS,
   parsePort,
+  refreshRoleForCalls,
   startHttpServer,
+  requiredCapabilitiesOf,
 } from './http-server';
 import { MCP_RESOURCE_URL, REPORTFLOW_OAUTH_ISSUER_URL } from './config';
 import { fixedAuthorization } from './integration/helpers/createTestClient';
+import type { WorkspaceAuthorization } from './workspace-role';
 
 /**
  * 上流応答モックの本文ストリーム。
@@ -243,6 +246,37 @@ describe('http-server', () => {
       );
       expect(res.headers['cache-control']).toContain('no-cache');
     });
+
+    it('pathful endpoint は RFC 9728 の resource と既存 metadata を維持する', async () => {
+      const [existing, pathBased] = await Promise.all([
+        request(app)
+          .get('/.well-known/oauth-protected-resource')
+          .expect(200)
+          .expect('Content-Type', /application\/json/),
+        request(app)
+          .get('/.well-known/oauth-protected-resource/mcp')
+          .expect(200)
+          .expect('Content-Type', /application\/json/),
+      ]);
+
+      expect(existing.body.resource).toBe('https://mcp.re-port-flow.com');
+      expect(pathBased.body.resource).toBe('https://mcp.re-port-flow.com/mcp');
+      const pathlessMetadata = { ...existing.body };
+      const pathfulMetadata = { ...pathBased.body };
+      delete pathlessMetadata.resource;
+      delete pathfulMetadata.resource;
+      expect(pathfulMetadata).toEqual(pathlessMetadata);
+      expect(pathBased.headers['cache-control']).toContain('no-cache');
+    });
+  });
+
+  describe('GET /robots.txt', () => {
+    it('200 + text/plain で MCP サービスのクロール拒否ポリシーを返す', async () => {
+      const res = await request(app).get('/robots.txt').expect(200);
+
+      expect(res.headers['content-type']).toContain('text/plain');
+      expect(res.text).toBe('User-agent: *\nDisallow: /\n');
+    });
   });
 
   describe('GET /.well-known/oauth-authorization-server', () => {
@@ -320,6 +354,22 @@ describe('http-server', () => {
   });
 
   describe('GET /authorize', () => {
+    it.each([
+      '/.well-known/oauth-protected-resource',
+      '/.well-known/oauth-protected-resource/mcp',
+    ])('%s の resource を変更せず上流へ渡す', async (metadataPath) => {
+      const metadata = await request(app).get(metadataPath).expect(200);
+      const res = await request(app)
+        .get('/authorize')
+        .query({ resource: metadata.body.resource })
+        .expect(302);
+
+      const upstream = new URL(res.headers.location);
+      expect(upstream.searchParams.getAll('resource')).toEqual([
+        metadata.body.resource,
+      ]);
+    });
+
     it('issuer の path prefix (/api/v1) を保持して 302 redirect する', async () => {
       const res = await request(app).get('/authorize').query({
         response_type: 'code',
@@ -379,6 +429,63 @@ describe('http-server', () => {
       >;
     const sentInit = (): FetchInit => fetchMock.mock.calls[0][1] as FetchInit;
 
+    it.each([
+      ['authorization_code', 'form'],
+      ['authorization_code', 'json'],
+      ['refresh_token', 'form'],
+      ['refresh_token', 'json'],
+    ])(
+      '%s (%s) は pathless / pathful resource を変更せず転送する',
+      async (grantType, encoding) => {
+        for (const resource of [
+          'https://mcp.re-port-flow.com',
+          'https://mcp.re-port-flow.com/mcp',
+        ]) {
+          fetchMock.mockClear();
+          upstreamOk();
+          await request(app)
+            .post('/token')
+            .type(encoding)
+            .send({
+              grant_type: grantType,
+              resource,
+              ...(grantType === 'refresh_token'
+                ? { refresh_token: 'rt' }
+                : { code: 'abc', code_verifier: 'verifier' }),
+            })
+            .expect(200);
+
+          expect(fetchMock).toHaveBeenCalledTimes(1);
+          expect(calledUrl()).toBe(
+            `${REPORTFLOW_OAUTH_ISSUER_URL}/oauth/token`,
+          );
+          expect(sentBody().resource).toBe(resource);
+          expect(sentBody().grant_type).toBe(grantType);
+        }
+      },
+    );
+
+    it('resource 不一致の invalid_target を書き換えず再試行もしない', async () => {
+      const error = {
+        error: 'invalid_target',
+        error_description: 'resource parameter mismatch (RFC 8707)',
+      };
+      upstreamOk(error, 400);
+      const res = await request(app)
+        .post('/token')
+        .type('form')
+        .send({
+          grant_type: 'refresh_token',
+          refresh_token: 'rt-for-pathless-resource',
+          resource: 'https://mcp.re-port-flow.com/mcp',
+        })
+        .expect(400);
+
+      expect(res.body).toEqual(error);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(sentBody().resource).toBe('https://mcp.re-port-flow.com/mcp');
+    });
+
     it('form-encoded を JSON に変換し upstream /oauth/token へ転送する', async () => {
       upstreamOk();
       const res = await request(app)
@@ -412,6 +519,7 @@ describe('http-server', () => {
       const body = sentBody();
       expect(body.grant_type).toBe('refresh_token');
       expect(body.refresh_token).toBe('rt');
+      expect(body).not.toHaveProperty('resource');
     });
 
     it('JSON 経路でも単一要素 resource 配列はスカラーに正規化する', async () => {
@@ -1027,6 +1135,264 @@ describe('http-server', () => {
       expect(logged).not.toContain('\nrejection=forged');
       expect(logged).toContain('rejection=non_json_content_type');
     });
+  });
+
+  describe('GET /userinfo (UserInfo proxy)', () => {
+    const realFetch = global.fetch;
+    let fetchMock: jest.Mock;
+    let errorSpy: jest.SpyInstance;
+
+    // 実発行値ではないダミー。
+    const DUMMY_CLIENT_ID = 'a1b2c3d4e5f6.access';
+    const DUMMY_CLIENT_SECRET = 'dummy-service-token-secret-not-real';
+
+    type FetchInit = {
+      method: string;
+      headers: Record<string, string>;
+      body?: string;
+      redirect?: RequestRedirect;
+    };
+    const calledUrl = (): string => fetchMock.mock.calls[0][0] as string;
+    const sentInit = (): FetchInit => fetchMock.mock.calls[0][1] as FetchInit;
+
+    const upstream = (init: {
+      status: number;
+      contentType?: string;
+      text: string;
+    }): void => {
+      fetchMock.mockImplementation(() =>
+        Promise.resolve({
+          status: init.status,
+          body: bodyOf(init.text),
+          headers: new Headers(
+            init.contentType ? { 'content-type': init.contentType } : {},
+          ),
+        }),
+      );
+    };
+
+    const buildStagingApp = (): ReturnType<typeof buildHttpApp> => {
+      process.env['RF_ACCESS_CLIENT_ID'] = DUMMY_CLIENT_ID;
+      process.env['RF_ACCESS_CLIENT_SECRET'] = DUMMY_CLIENT_SECRET;
+      try {
+        return buildHttpApp();
+      } finally {
+        delete process.env['RF_ACCESS_CLIENT_ID'];
+        delete process.env['RF_ACCESS_CLIENT_SECRET'];
+      }
+    };
+
+    beforeEach(() => {
+      fetchMock = jest.fn();
+      global.fetch = fetchMock as unknown as typeof fetch;
+      errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    });
+    afterEach(() => {
+      global.fetch = realFetch;
+      errorSpy.mockRestore();
+    });
+
+    it('上流 /oauth/userinfo へ GET で Bearer をそのまま転送し、応答を no-store で返す', async () => {
+      const claims = { sub: 'user-1', email: 'user@example.test' };
+      upstream({
+        status: 200,
+        contentType: 'application/json',
+        text: JSON.stringify(claims),
+      });
+
+      const res = await request(app)
+        .get('/userinfo')
+        .set('Authorization', 'Bearer at-123')
+        .expect(200);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(calledUrl()).toBe(`${REPORTFLOW_OAUTH_ISSUER_URL}/oauth/userinfo`);
+      expect(sentInit().method).toBe('GET');
+      expect(sentInit().headers.Authorization).toBe('Bearer at-123');
+      // GET に本文・Content-Type を付けない。
+      expect(sentInit().body).toBeUndefined();
+      expect(sentInit().headers['Content-Type']).toBeUndefined();
+      // Access のログイン画面へのリダイレクトを追従しない。
+      expect(sentInit().redirect).toBe('manual');
+      expect(res.body).toEqual(claims);
+      expect(res.headers['content-type']).toMatch(/^application\/json/);
+      expect(res.headers['cache-control']).toBe('no-store');
+    });
+
+    it('production 相当 (2 値未設定) では Access ヘッダーを付けない', async () => {
+      upstream({
+        status: 200,
+        contentType: 'application/json',
+        text: JSON.stringify({ sub: 'user-1' }),
+      });
+      await request(app)
+        .get('/userinfo')
+        .set('Authorization', 'Bearer at')
+        .expect(200);
+
+      expect(sentInit().headers['CF-Access-Client-Id']).toBeUndefined();
+      expect(sentInit().headers['CF-Access-Client-Secret']).toBeUndefined();
+    });
+
+    it('staging 相当 (2 値設定) では Access ヘッダーを付け、クライアントの CF-Access-* で上書きされず、応答に出さない', async () => {
+      upstream({
+        status: 200,
+        contentType: 'application/json',
+        text: JSON.stringify({ sub: 'user-1' }),
+      });
+      const res = await request(buildStagingApp())
+        .get('/userinfo')
+        .set('Authorization', 'Bearer at')
+        .set('CF-Access-Client-Id', 'attacker.access')
+        .set('CF-Access-Client-Secret', 'attacker-secret')
+        .expect(200);
+
+      expect(sentInit().headers.Authorization).toBe('Bearer at');
+      expect(sentInit().headers['CF-Access-Client-Id']).toBe(DUMMY_CLIENT_ID);
+      expect(sentInit().headers['CF-Access-Client-Secret']).toBe(
+        DUMMY_CLIENT_SECRET,
+      );
+      expect(JSON.stringify(res.headers)).not.toContain(DUMMY_CLIENT_SECRET);
+      expect(res.text).not.toContain(DUMMY_CLIENT_SECRET);
+    });
+
+    it('上流の 401 (JSON) は status と本文をそのまま返す', async () => {
+      const error = { error: 'invalid_token' };
+      upstream({
+        status: 401,
+        contentType: 'application/json',
+        text: JSON.stringify(error),
+      });
+      const res = await request(app)
+        .get('/userinfo')
+        .set('Authorization', 'Bearer expired')
+        .expect(401);
+      expect(res.body).toEqual(error);
+    });
+
+    it('Bearer の無い要求も上流の判定に任せ、Authorization を作らない', async () => {
+      upstream({
+        status: 401,
+        contentType: 'application/json',
+        text: JSON.stringify({ error: 'invalid_token' }),
+      });
+      await request(app).get('/userinfo').expect(401);
+      expect(sentInit().headers.Authorization).toBeUndefined();
+    });
+
+    const upstreamWithHeaders = (
+      status: number,
+      headers: Record<string, string>,
+      text: string,
+    ): void => {
+      fetchMock.mockImplementation(() =>
+        Promise.resolve({
+          status,
+          body: bodyOf(text),
+          headers: new Headers(headers),
+        }),
+      );
+    };
+    const CHALLENGE =
+      'Bearer error="invalid_token", error_description="The access token expired"';
+
+    it('上流 401 (JSON) の WWW-Authenticate を中継する', async () => {
+      upstreamWithHeaders(
+        401,
+        { 'content-type': 'application/json', 'www-authenticate': CHALLENGE },
+        JSON.stringify({ error: 'invalid_token' }),
+      );
+      const res = await request(app)
+        .get('/userinfo')
+        .set('Authorization', 'Bearer expired')
+        .expect(401);
+      expect(res.headers['www-authenticate']).toBe(CHALLENGE);
+      expect(res.body).toEqual({ error: 'invalid_token' });
+    });
+
+    it('本文の無い 401 (RFC 6750 §3) は 502 にせず、WWW-Authenticate だけで返す', async () => {
+      upstreamWithHeaders(401, { 'www-authenticate': CHALLENGE }, '');
+      const res = await request(app)
+        .get('/userinfo')
+        .set('Authorization', 'Bearer expired')
+        .expect(401);
+      expect(res.headers['www-authenticate']).toBe(CHALLENGE);
+      expect(res.text).toBe('');
+      expect(res.headers['cache-control']).toBe('no-store');
+    });
+
+    it('403 (scope 不足) の WWW-Authenticate も中継する', async () => {
+      const insufficient = 'Bearer error="insufficient_scope", scope="openid"';
+      upstreamWithHeaders(
+        403,
+        {
+          'content-type': 'application/json',
+          'www-authenticate': insufficient,
+        },
+        JSON.stringify({ error: 'insufficient_scope' }),
+      );
+      const res = await request(app)
+        .get('/userinfo')
+        .set('Authorization', 'Bearer at')
+        .expect(403);
+      expect(res.headers['www-authenticate']).toBe(insufficient);
+    });
+
+    it('200 の WWW-Authenticate は中継しない (401 / 403 だけ)', async () => {
+      upstreamWithHeaders(
+        200,
+        { 'content-type': 'application/json', 'www-authenticate': CHALLENGE },
+        JSON.stringify({ sub: 'user-1' }),
+      );
+      const res = await request(app)
+        .get('/userinfo')
+        .set('Authorization', 'Bearer at')
+        .expect(200);
+      expect(res.headers['www-authenticate']).toBeUndefined();
+    });
+
+    it('本文の無い 401 の透過は /userinfo だけ。/token では従来どおり 502', async () => {
+      upstreamWithHeaders(401, { 'www-authenticate': CHALLENGE }, '');
+      await request(app)
+        .post('/token')
+        .send({ grant_type: 'refresh_token', refresh_token: 'rt' })
+        .expect(502);
+    });
+
+    it('本文の無い 403 は /userinfo でも 502 (透過するのは 401 だけ)', async () => {
+      upstreamWithHeaders(403, { 'www-authenticate': CHALLENGE }, '');
+      await request(app)
+        .get('/userinfo')
+        .set('Authorization', 'Bearer at')
+        .expect(502);
+    });
+
+    it('上流 302 (Access のログイン画面) は追従せず 502 にする', async () => {
+      upstream({
+        status: 302,
+        contentType: 'text/html',
+        text: '<html></html>',
+      });
+      const res = await request(app)
+        .get('/userinfo')
+        .set('Authorization', 'Bearer at')
+        .expect(502);
+      expect(res.text).not.toContain('<html>');
+    });
+
+    it.each([
+      ['sub が無い 200', 'application/json', JSON.stringify({ email: 'a@b' })],
+      ['HTML の 200', 'text/html', '<!DOCTYPE html><html></html>'],
+    ])(
+      '%s は成功として返さず 502 にする',
+      async (_label, contentType, text) => {
+        upstream({ status: 200, contentType, text });
+        await request(app)
+          .get('/userinfo')
+          .set('Authorization', 'Bearer at')
+          .expect(502);
+      },
+    );
   });
 
   describe('POST /mcp 認可ガード', () => {
@@ -1961,5 +2327,253 @@ describe('startHttpServer timeouts', () => {
     } finally {
       await closeServer(holder);
     }
+  });
+});
+
+// PRJ-3-2449: ロール解決のキャッシュを 5 分へ延ばしたので、昇格 (READ → WRITE 等) の
+// 反映が遅れないよう、tools/call の対象がキャッシュ上のロールで足りないときだけ
+// factory より前に 1 回引き直す。SDK は無効化したツールへの tools/call を call
+// ガードより前に拒否するため、引き直しはここでしか効かない。
+describe('requiredCapabilitiesOf', () => {
+  it('単発 / batch の tools/call と resources/read が要求する capability を列挙する', () => {
+    expect(
+      requiredCapabilitiesOf({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'copy_gallery_template' },
+      }),
+    ).toEqual(['workspace.write']);
+    expect(
+      requiredCapabilitiesOf([
+        { method: 'tools/list', params: {} },
+        { method: 'tools/call', params: { name: 'list_templates' } },
+        { method: 'resources/read', params: { uri: 'reportflow://designs' } },
+        {
+          method: 'resources/read',
+          params: { uri: 'reportflow://designs/d1/parameters' },
+        },
+        { method: 'resources/read', params: { uri: 'reportflow://errors' } },
+        { method: 'tools/call', params: { name: 'no_such_tool' } },
+        { method: 'tools/call', params: {} },
+        null,
+      ]),
+    ).toEqual(['workspace.read', 'workspace.read', 'workspace.read']);
+    expect(requiredCapabilitiesOf(undefined)).toEqual([]);
+  });
+});
+
+describe('refreshRoleForCalls', () => {
+  const callBody = (name: string) => ({
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'tools/call',
+    params: { name, arguments: {} },
+  });
+  const resolverReturning = (auth: WorkspaceAuthorization) =>
+    jest
+      .fn<Promise<WorkspaceAuthorization>, [{ fresh?: boolean }?]>()
+      .mockResolvedValue(auth);
+
+  it('キャッシュ上の READ で足りないツールなら fresh で引き直す', async () => {
+    const resolve = resolverReturning(fixedAuthorization('READ'));
+    await refreshRoleForCalls(callBody('copy_gallery_template'), resolve);
+    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(resolve).toHaveBeenLastCalledWith({ fresh: true });
+  });
+
+  it('キャッシュ上のロールで足りるなら引き直さない', async () => {
+    const resolve = resolverReturning(fixedAuthorization('READ'));
+    await refreshRoleForCalls(callBody('list_templates'), resolve);
+    expect(resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it('resources/read でもキャッシュ上の UNREAD で足りなければ引き直す', async () => {
+    const resolve = resolverReturning(fixedAuthorization('UNREAD'));
+    await refreshRoleForCalls(
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'resources/read',
+        params: { uri: 'reportflow://designs' },
+      },
+      resolve,
+    );
+    expect(resolve).toHaveBeenLastCalledWith({ fresh: true });
+  });
+
+  it('tools/call・resources/read 以外は解決自体をしない', async () => {
+    const resolve = resolverReturning(fixedAuthorization('READ'));
+    await refreshRoleForCalls({ method: 'tools/list' }, resolve);
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it('resolved 以外 (未認証など) は引き直さない', async () => {
+    const resolve = resolverReturning({
+      capabilities: new Set(['public']),
+      resolution: { status: 'unauthenticated', reason: 'no-token' },
+    } as WorkspaceAuthorization);
+    await refreshRoleForCalls(callBody('copy_gallery_template'), resolve);
+    expect(resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it('未知のツール名では引き直さない', async () => {
+    const resolve = resolverReturning(fixedAuthorization('READ'));
+    await refreshRoleForCalls(callBody('no_such_tool'), resolve);
+    // 要求する capability が決まらないので、解決自体をしない (not found は SDK が返す)。
+    expect(resolve).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /mcp: キャッシュ上は READ でも、昇格済みなら copy_gallery_template が handler まで届く', () => {
+  // キャッシュの振る舞いを模した resolver: 通常はキャッシュ上のロール、fresh: true で
+  // 上流の現在のロールを引き直し、以降の通常解決もそれを返す。
+  const cachingResolver = (
+    cached: 'READ' | 'WRITE',
+    upstream: 'READ' | 'WRITE',
+  ) => {
+    let current = cached;
+    return jest.fn((options?: { fresh?: boolean }) => {
+      if (options?.fresh === true) current = upstream;
+      return Promise.resolve(fixedAuthorization(current));
+    });
+  };
+  const callCopy = (app: ReturnType<typeof buildHttpApp>) =>
+    request(app)
+      .post('/mcp')
+      .set('Accept', 'application/json, text/event-stream')
+      .set('Authorization', 'Bearer dummy-token')
+      .send({
+        jsonrpc: '2.0',
+        id: 11,
+        method: 'tools/call',
+        params: {
+          name: 'copy_gallery_template',
+          arguments: { slug: 'invoice' },
+        },
+      })
+      .expect(200);
+
+  it('上流で WRITE に昇格済み: SDK の disabled で弾かれず、ツールの結果が返る', async () => {
+    const resolve = cachingResolver('READ', 'WRITE');
+    const res = await callCopy(buildHttpApp({ resolveAuthorization: resolve }));
+    const message = parseLastSseMessage(res.text) as {
+      result?: unknown;
+      error?: unknown;
+    };
+
+    expect(resolve).toHaveBeenCalledWith({ fresh: true });
+    expect(message.error).toBeUndefined();
+    expect(message.result).toBeDefined();
+    // SDK の disabled 拒否が isError の結果で返る場合も区別できるように、拒否の文言が
+    // 無いことまで確かめる (修正を外すとここで落ちる)。
+    expect(JSON.stringify(message)).not.toContain('disabled');
+  });
+
+  it('上流でも READ のまま: 従来どおり SDK が disabled で拒否する', async () => {
+    const resolve = cachingResolver('READ', 'READ');
+    const res = await callCopy(buildHttpApp({ resolveAuthorization: resolve }));
+    const message = parseLastSseMessage(res.text) as {
+      result?: { isError?: boolean };
+      error?: { message?: string };
+    };
+
+    expect(resolve).toHaveBeenCalledWith({ fresh: true });
+    const rejected =
+      message.error !== undefined || message.result?.isError === true;
+    expect(rejected).toBe(true);
+    expect(JSON.stringify(message)).toContain('disabled');
+  });
+});
+
+describe('POST /mcp: キャッシュ上は UNREAD でも、READ に昇格済みなら workspace リソースを読める (PRJ-3-2449)', () => {
+  it('resources/read reportflow://designs が SDK の disabled で弾かれず、上流の一覧が返る', async () => {
+    let current: 'UNREAD' | 'READ' = 'UNREAD';
+    const resolve = jest.fn((options?: { fresh?: boolean }) => {
+      if (options?.fresh === true) current = 'READ';
+      return Promise.resolve(fixedAuthorization(current));
+    });
+    const app = buildHttpApp({ resolveAuthorization: resolve });
+    const realFetch = global.fetch;
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          designs: [
+            {
+              id: 'd1',
+              label: 'Invoice',
+              latestVersion: 1,
+              thumbnail: '',
+              updatedAt: '2026-01-01T00:00:00Z',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    ) as unknown as typeof fetch;
+    try {
+      const res = await request(app)
+        .post('/mcp')
+        .set('Accept', 'application/json, text/event-stream')
+        .set('Authorization', 'Bearer dummy-token')
+        .send({
+          jsonrpc: '2.0',
+          id: 12,
+          method: 'resources/read',
+          params: { uri: 'reportflow://designs' },
+        })
+        .expect(200);
+      const message = parseLastSseMessage(res.text) as {
+        result?: unknown;
+        error?: unknown;
+      };
+
+      expect(resolve).toHaveBeenCalledWith({ fresh: true });
+      expect(message.error).toBeUndefined();
+      expect(JSON.stringify(message.result)).toContain('Invoice');
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+});
+
+describe('POST /mcp: 1 リクエストの中ではロールを 1 回だけ解決する (PRJ-3-2449)', () => {
+  // resolved 以外 (unavailable 等) はキャッシュされないので、引き直しの判定と
+  // factory がそれぞれ解決すると上流への問い合わせが直列に増える。
+  const unavailable = {
+    capabilities: new Set(['public']),
+    resolution: { status: 'unavailable', reason: 'upstream-503' },
+  } as WorkspaceAuthorization;
+
+  it('解決結果が unavailable でも、tools/call 1 回につき resolver は 1 回', async () => {
+    const resolve = jest.fn(() => Promise.resolve(unavailable));
+    const res = await request(buildHttpApp({ resolveAuthorization: resolve }))
+      .post('/mcp')
+      .set('Accept', 'application/json, text/event-stream')
+      .set('Authorization', 'Bearer dummy-token')
+      .send({
+        jsonrpc: '2.0',
+        id: 13,
+        method: 'tools/call',
+        params: { name: 'copy_gallery_template', arguments: { slug: 'x' } },
+      })
+      .expect(200);
+
+    expect(parseLastSseMessage(res.text)).toBeDefined();
+    expect(resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it('公開ツールの tools/call では引き直しの判定で解決しない', async () => {
+    const resolve = jest.fn(() => Promise.resolve(fixedAuthorization('READ')));
+    await refreshRoleForCalls(
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'search_gallery_templates', arguments: {} },
+      },
+      resolve,
+    );
+    expect(resolve).not.toHaveBeenCalled();
   });
 });
