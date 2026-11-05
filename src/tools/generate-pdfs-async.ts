@@ -3,6 +3,12 @@ import {
   attachPlanNotice,
   type PlanNoticeResolver,
 } from '../workspace-usage.js';
+import {
+  buildAcceptedCard,
+  safeCard,
+  type CardOptions,
+  type SlackMeta,
+} from '../slack/status-card.js';
 
 export const generatePdfsAsyncTool = {
   name: 'generate_pdfs_async',
@@ -19,6 +25,8 @@ export type GeneratePdfsAsyncInput = {
 export type GeneratePdfsAsyncResult = {
   content: [{ type: 'text'; text: string }];
   isError?: true;
+  /** Slack opt-in 時だけ付く受付カード (PRJ-3-2563)。 */
+  _meta?: SlackMeta;
 };
 
 export type GeneratePdfsAsyncDeps = {
@@ -27,6 +35,11 @@ export type GeneratePdfsAsyncDeps = {
    * (既定: `workspace-usage.ts` の `resolvePlanNotice`)。テストからの差し替え用。
    */
   resolvePlanNotice?: PlanNoticeResolver;
+  /**
+   * Slack opt-in 時だけ渡す (PRJ-3-2563)。渡されたときだけ `_meta.slack.blocks` に
+   * 受付カードを足す。text の応答は変えない。
+   */
+  slackCard?: CardOptions;
 };
 
 export const handleGeneratePdfsAsync = async (
@@ -45,8 +58,14 @@ export const handleGeneratePdfsAsync = async (
     const payload = await attachPlanNotice(result, deps.resolvePlanNotice, {
       excludesPendingJob: true,
     });
+    const { slackCard } = deps;
+    const card =
+      slackCard !== undefined
+        ? safeCard(() => buildAcceptedCard(result, slackCard))
+        : null;
     return {
       content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
+      ...(card !== null ? { _meta: card } : {}),
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

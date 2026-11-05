@@ -22,6 +22,7 @@ import {
 } from './workspace-permission.js';
 import {
   resolveWorkspaceAuthorization,
+  type ResolveOptions,
   type RoleResolution,
   type WorkspaceAuthorization,
 } from './workspace-role.js';
@@ -135,8 +136,9 @@ export const trackToolDenied = (
   });
 };
 
-export type WorkspaceAuthorizationResolver =
-  () => Promise<WorkspaceAuthorization>;
+export type WorkspaceAuthorizationResolver = (
+  options?: ResolveOptions,
+) => Promise<WorkspaceAuthorization>;
 
 export type GuardToolOptions = {
   mode: 'stdio' | 'http';

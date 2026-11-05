@@ -5,6 +5,7 @@ import {
   resolveWorkspaceAuthorization,
   resolveWorkspaceRole,
   WORKSPACE_ROLE_CACHE_TTL_MS,
+  WORKSPACE_ROLE_FRESH_COOLDOWN_MS,
   WORKSPACE_ROLE_TIMEOUT_MS,
   type RoleResolution,
 } from './workspace-role';
@@ -215,7 +216,11 @@ describe('HTTP モードは stdio のトークンストアへ落ちない', () =
       resolveWorkspaceRole('http'),
     );
 
-    expect(result).toEqual({ status: 'resolved', role: 'READ', workspaceId: WS });
+    expect(result).toEqual({
+      status: 'resolved',
+      role: 'READ',
+      workspaceId: WS,
+    });
   });
 
   it('stdio モードでは従来どおりトークンストア経路を使う', async () => {
@@ -319,9 +324,10 @@ describe('resolveWorkspaceRole（上流エラーの分類）', () => {
   });
 });
 
-describe('キャッシュ（ST-1 判断4: 60 秒 / token 単位 / 単一フライト）', () => {
-  it('TTL は 60 秒', () => {
-    expect(WORKSPACE_ROLE_CACHE_TTL_MS).toBe(60_000);
+describe('キャッシュ（ST-1 判断4: 5 分 / token 単位 / 単一フライト）', () => {
+  // PRJ-3-2449: ST-1 判断4 を 60 秒から 5 分へ変更 (一次仕様「MCPサーバー 要件・仕様」も同時に更新)。
+  it('TTL は 5 分', () => {
+    expect(WORKSPACE_ROLE_CACHE_TTL_MS).toBe(300_000);
   });
 
   it('成功はキャッシュされ 2 回目は上流を叩かない', async () => {
@@ -336,6 +342,38 @@ describe('キャッシュ（ST-1 判断4: 60 秒 / token 単位 / 単一フラ�
       workspaceId: WS,
     });
     expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('fresh の同時呼び出しは、走っている引き直しに合流して新しいロールを返す（PRJ-3-2449）', async () => {
+    jest.useFakeTimers();
+    try {
+      const startedAt = Date.now();
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse(200, listBody([item(WS, '003')])),
+      );
+      await resolveWorkspaceRole('stdio');
+
+      jest.setSystemTime(startedAt + WORKSPACE_ROLE_FRESH_COOLDOWN_MS + 1);
+      let release: (value: Response) => void = () => undefined;
+      mockFetch.mockReturnValueOnce(
+        new Promise<Response>((resolve) => {
+          release = resolve;
+        }),
+      );
+      const both = Promise.all([
+        resolveWorkspaceRole('stdio', { fresh: true }),
+        resolveWorkspaceRole('stdio', { fresh: true }),
+      ]);
+      release(jsonResponse(200, listBody([item(WS, '002')])));
+      const results = await both;
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      for (const result of results) {
+        expect(result).toMatchObject({ status: 'resolved', role: 'WRITE' });
+      }
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('同時呼び出しは 1 本の fetch に束ねる（単一フライト）', async () => {
@@ -388,27 +426,146 @@ describe('キャッシュ（ST-1 判断4: 60 秒 / token 単位 / 単一フラ�
   it('TTL 経過後は引き直し、降格が反映される', async () => {
     jest.useFakeTimers();
     try {
+      const startedAt = Date.now();
       mockFetch.mockResolvedValueOnce(
         jsonResponse(200, listBody([item(WS, '002')])),
       );
-      expect(await resolveWorkspaceRole('stdio')).toMatchObject({ role: 'WRITE' });
+      expect(await resolveWorkspaceRole('stdio')).toMatchObject({
+        role: 'WRITE',
+      });
 
-      jest.setSystemTime(Date.now() + WORKSPACE_ROLE_CACHE_TTL_MS + 1);
+      // 定数ではなく固定の経過時間で確かめる: 旧 TTL (60 秒) を過ぎてもキャッシュを使い、
+      // 5 分を過ぎたら引き直す。
+      jest.setSystemTime(startedAt + 60_001);
+      expect(await resolveWorkspaceRole('stdio')).toMatchObject({
+        role: 'WRITE',
+      });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+
+      jest.setSystemTime(startedAt + 300_001);
       mockFetch.mockResolvedValueOnce(
         jsonResponse(200, listBody([item(WS, '003')])),
       );
-      expect(await resolveWorkspaceRole('stdio')).toMatchObject({ role: 'READ' });
+      expect(await resolveWorkspaceRole('stdio')).toMatchObject({
+        role: 'READ',
+      });
       expect(mockFetch).toHaveBeenCalledTimes(2);
     } finally {
       jest.useRealTimers();
     }
   });
 
+  it('fresh: true はクールダウン後ならキャッシュを読まずに引き直し、結果でキャッシュを更新する（PRJ-3-2449）', async () => {
+    jest.useFakeTimers();
+    try {
+      const startedAt = Date.now();
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse(200, listBody([item(WS, '003')])),
+      );
+      expect(await resolveWorkspaceRole('stdio')).toMatchObject({
+        role: 'READ',
+      });
+
+      jest.setSystemTime(startedAt + WORKSPACE_ROLE_FRESH_COOLDOWN_MS + 1);
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse(200, listBody([item(WS, '002')])),
+      );
+      expect(
+        await resolveWorkspaceRole('stdio', { fresh: true }),
+      ).toMatchObject({ role: 'WRITE' });
+
+      // 以降の通常解決は更新後のキャッシュ (WRITE) を返し、上流を叩かない。
+      expect(await resolveWorkspaceRole('stdio')).toMatchObject({
+        role: 'WRITE',
+      });
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('fresh: true でもクールダウン内は上流を叩かない（権限外の呼び出しを繰り返されても上限がある）', async () => {
+    jest.useFakeTimers();
+    try {
+      const startedAt = Date.now();
+      mockFetch.mockResolvedValue(
+        jsonResponse(200, listBody([item(WS, '003')])),
+      );
+      await resolveWorkspaceRole('stdio');
+      for (let i = 0; i < 10; i += 1) {
+        await resolveWorkspaceRole('stdio', { fresh: true });
+      }
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+
+      // クールダウンを過ぎると 1 回だけ引き直し、また次のクールダウンが始まる。
+      jest.setSystemTime(startedAt + WORKSPACE_ROLE_FRESH_COOLDOWN_MS + 1);
+      for (let i = 0; i < 10; i += 1) {
+        await resolveWorkspaceRole('stdio', { fresh: true });
+      }
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('fresh の引き直しが失敗し続けても、上流への問い合わせはクールダウンごとに 1 回まで', async () => {
+    jest.useFakeTimers();
+    try {
+      const startedAt = Date.now();
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse(200, listBody([item(WS, '003')])),
+      );
+      await resolveWorkspaceRole('stdio');
+
+      // クールダウン後は上流が 403 を返し続ける (除籍など)。失敗はキャッシュに書かれない。
+      jest.setSystemTime(startedAt + WORKSPACE_ROLE_FRESH_COOLDOWN_MS + 1);
+      mockFetch.mockResolvedValue(jsonResponse(403, { message: 'nope' }));
+      for (let i = 0; i < 10; i += 1) {
+        await resolveWorkspaceRole('stdio', { fresh: true });
+      }
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('fresh の引き直しが失敗しても、既存の成功キャッシュを残し失敗を保存しない', async () => {
+    jest.useFakeTimers();
+    try {
+      const startedAt = Date.now();
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse(200, listBody([item(WS, '003')])),
+      );
+      expect(await resolveWorkspaceRole('stdio')).toMatchObject({
+        role: 'READ',
+      });
+
+      jest.setSystemTime(startedAt + WORKSPACE_ROLE_FRESH_COOLDOWN_MS + 1);
+      mockFetch.mockResolvedValueOnce(jsonResponse(503, {}));
+      expect(
+        await resolveWorkspaceRole('stdio', { fresh: true }),
+      ).toMatchObject({ status: 'unavailable' });
+
+      expect(await resolveWorkspaceRole('stdio')).toMatchObject({
+        role: 'READ',
+      });
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('クールダウンは 30 秒', () => {
+    expect(WORKSPACE_ROLE_FRESH_COOLDOWN_MS).toBe(30_000);
+  });
+
   it('トークンが変われば別エントリとして引き直す（ワークスペース切り替え）', async () => {
     mockFetch.mockResolvedValueOnce(
       jsonResponse(200, listBody([item(WS, '001')])),
     );
-    expect(await resolveWorkspaceRole('stdio')).toMatchObject({ workspaceId: WS });
+    expect(await resolveWorkspaceRole('stdio')).toMatchObject({
+      workspaceId: WS,
+    });
 
     getAuthHeaders.mockResolvedValue({
       Authorization: `Bearer ${tokenFor('ws-2')}`,
@@ -439,7 +596,8 @@ describe('resolveWorkspaceAuthorization', () => {
   it('解決結果と capability を一緒に返す', async () => {
     mockFetch.mockResolvedValue(jsonResponse(200, listBody([item(WS, '003')])));
 
-    const { capabilities, resolution } = await resolveWorkspaceAuthorization('stdio');
+    const { capabilities, resolution } =
+      await resolveWorkspaceAuthorization('stdio');
 
     expect(resolution).toEqual({
       status: 'resolved',
@@ -453,7 +611,8 @@ describe('resolveWorkspaceAuthorization', () => {
   it('上流障害では public のみへ fail-closed する', async () => {
     mockFetch.mockResolvedValue(jsonResponse(503, {}));
 
-    const { capabilities, resolution } = await resolveWorkspaceAuthorization('stdio');
+    const { capabilities, resolution } =
+      await resolveWorkspaceAuthorization('stdio');
 
     expect(resolution.status).toBe('unavailable');
     expect([...capabilities]).toEqual([...PUBLIC_CAPABILITIES]);

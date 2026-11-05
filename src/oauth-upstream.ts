@@ -1,5 +1,5 @@
 /**
- * OAuth proxy (`POST /register` / `POST /token`) が上流 reposts-api を叩くときの
+ * OAuth proxy (`POST /register` / `POST /token` / `GET /userinfo`) が上流 reposts-api を叩くときの
  * 共通処理を 1 箇所に集める。
  *
  * ── なぜ要るのか (PRJ-3-1573 / 2026-09-05 実測) ───────────────────────────────
@@ -285,8 +285,26 @@ const readBodyWithLimit = async (
 };
 
 export type UpstreamProxyResult =
-  | { readonly ok: true; readonly status: number; readonly body: string }
+  | {
+      readonly ok: true;
+      readonly status: number;
+      readonly body: string;
+      /**
+       * 上流が 401 / 403 で返した `WWW-Authenticate` (RFC 6750 §3)。
+       * `callOAuthUpstream` だけが詰める (`classifyUpstreamBody` は本文しか見ない)。
+       */
+      readonly wwwAuthenticate?: string;
+    }
   | { readonly ok: false; readonly rejection: UpstreamRejection };
+
+/** `WWW-Authenticate` を中継するときの上限。制御文字は潰す。 */
+const WWW_AUTHENTICATE_MAX = 1024;
+const safeWwwAuthenticate = (raw: string | null): string | undefined => {
+  if (raw === null) return undefined;
+  // eslint-disable-next-line no-control-regex
+  const cleaned = raw.replace(/[\u0000-\u001F\u007F]+/g, ' ').trim();
+  return cleaned === '' ? undefined : cleaned.slice(0, WWW_AUTHENTICATE_MAX);
+};
 
 const isJsonContentType = (contentType: string | null): boolean => {
   if (contentType === null) return false;
@@ -483,10 +501,21 @@ const logRejection = (
  * `/register` と `/token` が同じ穴を 2 つ持っていた)。
  */
 export const callOAuthUpstream = async (args: {
-  readonly endpoint: 'register' | 'token';
+  readonly endpoint: 'register' | 'token' | 'userinfo';
   readonly url: string;
-  readonly body: string;
-  /** 2xx を成功と認めるために必須の項目 (`client_id` / `access_token`)。 */
+  /**
+   * 既定は `POST`。`GET` は `/userinfo` (OIDC Core §5.3) 用で、本文を送らない。
+   */
+  readonly method?: 'GET' | 'POST';
+  /** `POST` のときの JSON 本文。`GET` では渡さない。 */
+  readonly body?: string;
+  /**
+   * 本文の無い 401 を成功 (透過) として扱う。`/userinfo` 用: RFC 6750 §3 の
+   * Bearer エラーは本文を持たず `WWW-Authenticate` だけで返り得る。
+   * `/token` `/register` では使わない (本文の無い 4xx は従来どおり 502)。
+   */
+  readonly allowEmptyUnauthorized?: boolean;
+  /** 2xx を成功と認めるために必須の項目 (`client_id` / `access_token` / `sub`)。 */
   readonly requiredField: string;
   readonly headers?: Record<string, string>;
   readonly accessAuth: AccessServiceAuth | null;
@@ -501,7 +530,9 @@ export const callOAuthUpstream = async (args: {
   const {
     endpoint,
     url,
+    method = 'POST',
     body,
+    allowEmptyUnauthorized = false,
     requiredField,
     headers = {},
     accessAuth,
@@ -511,16 +542,16 @@ export const callOAuthUpstream = async (args: {
   let res: Response;
   try {
     res = await fetch(url, {
-      method: 'POST',
+      method,
       headers: {
-        'Content-Type': 'application/json',
+        ...(method === 'POST' ? { 'Content-Type': 'application/json' } : {}),
         ...headers,
         // Access の資格情報は**最後に**載せる。クライアント由来のヘッダー
         // (`Authorization` 等) を先に展開しているので、順序を逆にすると
         // 外から上書きできる形になる。
         ...accessAuthHeaders(accessAuth),
       },
-      body,
+      ...(method === 'POST' ? { body: body ?? '' } : {}),
       // Access は身元の無い要求を 302 でログイン画面へ送る。既定の 'follow' は
       // それを追従して HTML を 200 として返してしまう (この不具合の直接原因)。
       //
@@ -580,6 +611,17 @@ export const callOAuthUpstream = async (args: {
     return read;
   }
 
+  const wwwAuthenticate =
+    status === 401 || status === 403
+      ? safeWwwAuthenticate(res.headers.get('www-authenticate'))
+      : undefined;
+  const withChallenge = (r: UpstreamProxyResult): UpstreamProxyResult =>
+    r.ok && wwwAuthenticate !== undefined ? { ...r, wwwAuthenticate } : r;
+
+  if (allowEmptyUnauthorized && status === 401 && read.text.trim() === '') {
+    return withChallenge({ ok: true, status, body: '' });
+  }
+
   const result = classifyUpstreamBody({
     status,
     contentType,
@@ -589,5 +631,5 @@ export const callOAuthUpstream = async (args: {
   if (!result.ok) {
     logRejection(endpoint, url, result.rejection, { status, contentType });
   }
-  return result;
+  return withChallenge(result);
 };

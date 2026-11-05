@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
+import { REPORTFLOW_OAUTH_ISSUER_URL } from './config.js';
 import {
   getDesignParametersTool,
   handleGetDesignParameters,
@@ -67,7 +68,11 @@ import {
   withTelemetry,
   type TelemetryClient,
 } from './telemetry/index.js';
-import { guardToolHandler, type GuardedToolResult } from './tool-guard.js';
+import {
+  guardToolHandler,
+  type GuardedToolResult,
+  type WorkspaceAuthorizationResolver,
+} from './tool-guard.js';
 import {
   applyCapabilities,
   PUBLIC_CAPABILITIES,
@@ -194,6 +199,15 @@ export type CreateMcpServerOptions = {
    */
   enableWidgets?: boolean;
   /**
+   * Slackbot MCP Client 向けの Block Kit カード (PRJ-3-2563) を出すか。HTTP モードかつ
+   * 本フラグが true のときだけ、generate_pdfs_async / get_generation_status の
+   * tool 定義に `_meta.slack.supportsBlockKit` を付け、結果に `_meta.slack.blocks`
+   * (状態カード) を足す。Slack App の manifest は接続 URL を `?slack=1` 付きにする
+   * (http-server.ts がクエリから決める)。既定は false で、他のクライアントの
+   * tool 定義・応答は変わらない。
+   */
+  enableSlackBlocks?: boolean;
+  /**
    * Telemetry client used to emit `integration.mcp.invoked` events. Defaults
    * to a no-op when `TELEMETRY_ENDPOINT_URL` is unset. Override in tests.
    */
@@ -212,11 +226,11 @@ export type CreateMcpServerOptions = {
   /**
    * call ガードがロールを引き直すときの解決関数。既定は本番の resolver
    * (`resolveWorkspaceAuthorization`) で、`capabilities` を解決したのと同じ
-   * 60 秒キャッシュを共有するため、通常はカタログと同じ答えになる。
+   * 5 分キャッシュを共有するため、通常はカタログと同じ答えになる。
    *
    * テストからロールを固定するための差し替え口でもある。
    */
-  resolveAuthorization?: () => Promise<WorkspaceAuthorization>;
+  resolveAuthorization?: WorkspaceAuthorizationResolver;
 };
 
 /**
@@ -230,6 +244,17 @@ export const createMcpServer = (
   // widget は HTTP モードかつ明示的に有効化されたとき (ChatGPT App 経路) のみ公開。
   // claude.ai 等の汎用クライアントには見せない。
   const enableWidgets = mode === 'http' && (opts.enableWidgets ?? false);
+  // Slack の状態カードも HTTP モードかつ明示的に有効化されたとき (Slack App の
+  // `?slack=1` 経路) のみ。出力履歴リンクは Web アプリ (OAuth issuer と同じホスト)
+  // のものだけを許す。
+  const enableSlackBlocks =
+    mode === 'http' && (opts.enableSlackBlocks ?? false);
+  const slackCard = enableSlackBlocks
+    ? { allowedLinkHosts: [new URL(REPORTFLOW_OAUTH_ISSUER_URL).hostname] }
+    : undefined;
+  const slackToolMeta = enableSlackBlocks
+    ? { _meta: { slack: { supportsBlockKit: true } } }
+    : {};
   const baseTelemetry = opts.telemetry ?? telemetryClientFromEnv();
   const server = new McpServer(
     {
@@ -678,9 +703,10 @@ export const createMcpServer = (
           destructiveHint: false,
           idempotentHint: false,
         },
+        ...slackToolMeta,
       },
       withGuardedTelemetry(generatePdfsAsyncTool.name, async (input) =>
-        handleGeneratePdfsAsync(input),
+        handleGeneratePdfsAsync(input, { slackCard }),
       ),
     ),
   );
@@ -708,9 +734,13 @@ export const createMcpServer = (
           destructiveHint: false,
           idempotentHint: true,
         },
+        ...slackToolMeta,
       },
       withGuardedTelemetry(getGenerationStatusTool.name, async (input) =>
-        handleGetGenerationStatus(input, { mode }),
+        handleGetGenerationStatus(input, {
+          mode,
+          slackBlocks: enableSlackBlocks,
+        }),
       ),
     ),
   );

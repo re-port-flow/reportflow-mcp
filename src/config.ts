@@ -92,8 +92,10 @@ export const SUPPORTED_SCOPES = [
 ] as const;
 
 /** OAuth 2.0 Protected Resource Metadata (RFC 9728) のレスポンスを生成する */
-export const buildProtectedResourceMetadata = (): Record<string, unknown> => ({
-  resource: MCP_RESOURCE_URL,
+export const buildProtectedResourceMetadata = (
+  resource: string = MCP_RESOURCE_URL,
+): Record<string, unknown> => ({
+  resource,
   // authorization_servers には reposts-api の issuer ではなく MCP サーバー自身を指定する。
   // reposts-api issuer はパスベース (https://...re-port-flow.com/api/v1) であるため、
   // RFC 8414 の AS metadata URL が /.well-known/oauth-authorization-server/api/v1 になり

@@ -120,6 +120,40 @@ describe('http-server A2A', () => {
     }
   });
 
+  it('キャッシュ上は UNREAD でも、上流で READ に昇格済みなら skill が実行される (PRJ-3-2449)', async () => {
+    // A2A は handleMcp を通らないので、callToolViaMcp でも factory の前に引き直す。
+    let current: 'UNREAD' | 'READ' = 'UNREAD';
+    const resolve = jest.fn((options?: { fresh?: boolean }) => {
+      if (options?.fresh === true) current = 'READ';
+      return Promise.resolve(fixedAuthorization(current));
+    });
+    const promotedApp = buildHttpApp({ resolveAuthorization: resolve });
+    const realFetch = global.fetch;
+    const upstream = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          customerName: { name: 'customerName', type: 'string' },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    global.fetch = upstream as unknown as typeof fetch;
+    try {
+      const res = await request(promotedApp)
+        .post('/a2a')
+        .set('Authorization', 'Bearer dummy-token')
+        .set('A2A-Version', '1.0')
+        .send(skillMessage('get_design_parameters', { designId: 'design-1' }))
+        .expect(200);
+
+      expect(resolve).toHaveBeenCalledWith({ fresh: true });
+      expect(res.body.result.task.status.state).toBe('TASK_STATE_COMPLETED');
+      expect(upstream).toHaveBeenCalled();
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
   it('引数の不足は FAILED Task になり、どのフィールドかを status.message で返す', async () => {
     // MCP SDK v2 はツール引数の検証エラーを JSON-RPC エラーではなく
     // isError のツール結果で返す (実測)。A2A では FAILED Task に写る。
@@ -187,5 +221,42 @@ describe('http-server A2A', () => {
   it('POST 以外は 405 + Allow: POST', async () => {
     const res = await request(app).get('/a2a').expect(405);
     expect(res.headers['allow']).toBe('POST');
+  });
+});
+
+describe('http-server A2A: 1 リクエストの中ではロールを 1 回だけ解決する (PRJ-3-2449)', () => {
+  it('解決結果が unavailable でも、SendMessage 1 回につき resolver は 1 回', async () => {
+    const resolve = jest.fn(() =>
+      Promise.resolve({
+        capabilities: new Set(['public']),
+        resolution: { status: 'unavailable', reason: 'upstream-503' },
+      } as unknown as ReturnType<typeof fixedAuthorization>),
+    );
+    await request(buildHttpApp({ resolveAuthorization: resolve }))
+      .post('/a2a')
+      .set('Authorization', 'Bearer dummy-token')
+      .set('A2A-Version', '1.0')
+      .send({
+        jsonrpc: '2.0',
+        id: 'req-1',
+        method: 'SendMessage',
+        params: {
+          message: {
+            messageId: 'm-1',
+            role: 'ROLE_USER',
+            parts: [
+              {
+                data: {
+                  skill: 'copy_gallery_template',
+                  arguments: { slug: 'x' },
+                },
+              },
+            ],
+          },
+        },
+      })
+      .expect(200);
+
+    expect(resolve).toHaveBeenCalledTimes(1);
   });
 });

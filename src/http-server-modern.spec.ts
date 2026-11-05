@@ -436,6 +436,70 @@ describe('http-server (2026-07-28 modern era)', () => {
       }
     });
 
+    it.each([
+      ['?slack=1', true],
+      ['通常 URL', false],
+    ] as const)(
+      '新仕様 tools/call get_generation_status (%s): 結果の _meta に serverInfo と並んで slack.blocks が残るか (PRJ-3-2563)',
+      async (_label, slack) => {
+        const realFetch = global.fetch;
+        global.fetch = jest.fn().mockImplementation(() =>
+          Promise.resolve(
+            new Response(
+              JSON.stringify({
+                requestId: 'AbCd1234EfGh5678',
+                status: 'processing',
+                files: [],
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } },
+            ),
+          ),
+        ) as unknown as typeof fetch;
+        try {
+          const res = await request(app)
+            .post(slack ? '/mcp?slack=1' : '/mcp')
+            .set('Accept', 'application/json, text/event-stream')
+            .set('Authorization', 'Bearer dummy-token')
+            .set('MCP-Protocol-Version', MODERN_PROTOCOL_VERSION)
+            .set('Mcp-Method', 'tools/call')
+            .set('Mcp-Name', 'get_generation_status')
+            .send({
+              jsonrpc: '2.0',
+              id: 8,
+              method: 'tools/call',
+              params: {
+                name: 'get_generation_status',
+                arguments: { requestId: 'AbCd1234EfGh5678' },
+                _meta: modernMeta(),
+              },
+            })
+            .expect(200);
+
+          const result = parseJsonRpc(res).result as {
+            isError?: boolean;
+            _meta?: Record<string, unknown>;
+          };
+          expect(result.isError).toBeFalsy();
+          const meta = result._meta ?? {};
+          const slackMeta = meta['slack'] as { blocks?: unknown[] } | undefined;
+          if (slack) {
+            // SDK が付ける serverInfo 等で上書きされず、カードがクライアントまで届く
+            expect(slackMeta?.blocks?.length).toBeGreaterThan(0);
+          } else {
+            expect(slackMeta).toBeUndefined();
+          }
+          // SDK 側の _meta (serverInfo 等) も残っている (マージであって置き換えではない)
+          expect(
+            Object.keys(meta).some((k) =>
+              k.startsWith('io.modelcontextprotocol/'),
+            ),
+          ).toBe(true);
+        } finally {
+          global.fetch = realFetch;
+        }
+      },
+    );
+
     it('旧仕様 GET (standalone SSE) は stateless 構成では 405 (クライアントは benign 扱い)', async () => {
       await request(app)
         .get('/mcp')
@@ -527,6 +591,38 @@ describe('http-server (2026-07-28 modern era)', () => {
         await client.close();
       }
     });
+
+    it.each([
+      [
+        '?slack=1 付き接続 (Slack App 経路)',
+        '?slack=1',
+        { supportsBlockKit: true },
+      ],
+      ['通常 URL', '', undefined],
+      ['?widgets=1 (ChatGPT App 経路)', '?widgets=1', undefined],
+    ] as const)(
+      '%s: get_generation_status の Slack _meta (PRJ-3-2563)',
+      async (_label, query, expected) => {
+        const client = new Client(
+          { name: 'slack-test-client', version: '0.0.0' },
+          { versionNegotiation: { mode: { pin: MODERN_PROTOCOL_VERSION } } },
+        );
+        const transport = new StreamableHTTPClientTransport(
+          new URL(`${baseUrl}${query}`),
+        );
+        await client.connect(transport);
+        try {
+          const { tools } = await client.listTools();
+          const status = tools.find(
+            (t) => t.name === 'get_generation_status',
+          ) as { _meta?: Record<string, unknown> } | undefined;
+          expect(status).toBeDefined();
+          expect(status?._meta?.['slack']).toEqual(expected);
+        } finally {
+          await client.close();
+        }
+      },
+    );
 
     it('通常 URL (widgets なし) では search に _meta が付かない (claude.ai 経路)', async () => {
       const client = new Client(
